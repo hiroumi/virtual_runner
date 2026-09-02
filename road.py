@@ -66,24 +66,28 @@ def _add_bend(segments: list[Segment], peak: float, length: int) -> None:
 # the one chicane near the end is kept short and snappy on purpose.
 # Chosen (and tuned by rendering test frames and driving simulations, see
 # docs/PHASE2_RACE_LOG.md) so the whole course takes roughly 60-90s at a
-# believable arcade cruising speed. Straight lengths were extended
-# alongside game.MAX_SPEED's 45->60 bump to keep that pacing -- bend
-# peak/length values are untouched, since those were tuned separately
-# for smoothness/forgiveness and don't need to change with top speed.
+# believable arcade cruising speed.
+#
+# Every length below (bends included, this time) is scaled by the same
+# ratio as game.MAX_SPEED's increases, so time-in-curve -- and therefore
+# both the safety-margin math and the felt duration of each bend -- stays
+# the same as top speed climbs, instead of the same bend suddenly feeling
+# more sudden because it's now covered in less real time. Peak curve
+# values are untouched; only length scales.
 TRACK_EVENTS: list[tuple[str, float, int]] = [
-    ("straight", 0.0, 90),
-    ("bend", 0.18, 80),    # long, gentle right sweep -- flat-out speed
-    ("straight", 0.0, 85),
-    ("bend", -0.22, 90),   # long, gentle left sweep
-    ("straight", 0.0, 85),
-    ("bend", 0.20, 110),   # lazy, wide S-curve
-    ("straight", 0.0, 90),
-    ("bend", 0.28, 70),    # medium right sweep, a bit more character
-    ("straight", 0.0, 85),
-    ("bend", -0.20, 70),   # medium left sweep
-    ("straight", 0.0, 95),
-    ("bend", 0.32, 40),    # snappy right-left chicane (kept tight on purpose)
-    ("straight", 0.0, 120),  # final straight to the finish
+    ("straight", 0.0, 120),
+    ("bend", 0.18, 105),   # long, gentle right sweep -- flat-out speed
+    ("straight", 0.0, 115),
+    ("bend", -0.22, 120),  # long, gentle left sweep
+    ("straight", 0.0, 115),
+    ("bend", 0.20, 145),   # lazy, wide S-curve
+    ("straight", 0.0, 120),
+    ("bend", 0.28, 95),    # medium right sweep, a bit more character
+    ("straight", 0.0, 115),
+    ("bend", -0.20, 95),   # medium left sweep
+    ("straight", 0.0, 125),
+    ("bend", 0.32, 55),    # snappy right-left chicane (kept tight on purpose)
+    ("straight", 0.0, 160),  # final straight to the finish
 ]
 
 

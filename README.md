@@ -330,12 +330,20 @@ taken flat-out with no steering at all without running off the road (see
 docs/PHASE2_RACE_LOG.md for the tuning). Steering still matters for lane
 position and dodging traffic, just not as a brake substitute.
 
-Top speed is 60 world-units/sec (HUD shows this as "240"). Raising it
-from an earlier, more sedate 45 meant scaling accel/brake/friction and
-traffic speed by the same ~33% to keep the feel consistent, and
-extending the course's *straight* sections (bends were left untouched)
-so the whole thing still takes about the same ~58s at a flat-out pace
-instead of finishing under a minute.
+Top speed is 80 world-units/sec (HUD shows this as "320", since the
+display is just `speed * 4`). Getting there took two rounds of the same
+scaling exercise (45 -> 60 -> 80), each time scaling accel/brake/friction
+and traffic speed by the same ratio to keep the pedal feel consistent.
+
+The second round also scaled every *bend's length* by that same ratio
+(peak curve values untouched), not just the straights. That's not
+arbitrary: how far you drift through a curve with no steering is
+proportional to how long you spend in it (`length / speed`), so scaling
+a bend's length by the same factor as top speed keeps that time --
+and therefore the safety margin and the felt duration of the curve --
+exactly constant as top speed climbs. Verified: max unsteered drift
+through the whole course stayed at ~0.28 across both speed increases,
+and a flat-out clear time stayed around ~58s throughout.
 
 ### Controls
 

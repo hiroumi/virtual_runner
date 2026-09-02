@@ -3,6 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from game import MAX_SPEED
 from road import SEGMENT_LENGTH, build_track, curve_at, segment_at, track_length, world_x_at
 
 
@@ -13,12 +14,18 @@ def test_track_has_segments_and_positive_length():
 
 
 def test_track_completes_in_a_reasonable_time_at_arcade_speed():
-    # Sanity check for the "60-90s course" requirement: at a plausible
-    # average cruising speed, the course should take roughly that long.
+    # Sanity check for the "60-90s course" requirement, tied to the
+    # game's actual MAX_SPEED (not a hardcoded number) so this stays
+    # meaningful as top speed gets tuned: even flat-out the whole way
+    # shouldn't be over in well under a minute, and a more realistic
+    # cruising speed (curves/traffic cost you some of MAX_SPEED) should
+    # land within the target window.
     segs = build_track()
     length = track_length(segs)
-    avg_speed = 30.0  # world units/sec, well under MAX_SPEED in game.py
-    assert 40.0 <= length / avg_speed <= 120.0
+    flat_out_time = length / MAX_SPEED
+    assert flat_out_time >= 40.0
+    typical_cruising_speed = 0.55 * MAX_SPEED
+    assert length / typical_cruising_speed <= 120.0
 
 
 def test_world_x_stays_within_a_visually_reasonable_range():
