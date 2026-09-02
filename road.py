@@ -13,6 +13,7 @@ straight into calculate_disparity() with no unit conversion.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 SEGMENT_LENGTH = 3.0  # world units per segment
@@ -32,41 +33,62 @@ class Segment:
     decor: list = field(default_factory=list)  # (side, kind) roadside decor
 
 
-def _add_section(segments: list[Segment], curve: float, length: int) -> None:
-    ramp = min(20, max(1, length // 3))
-    hold = max(0, length - 2 * ramp)
-    for i in range(ramp):
-        segments.append(Segment(index=len(segments), curve=curve * (i / ramp)))
-    for _ in range(hold):
+def _add_straight(segments: list[Segment], length: int) -> None:
+    for _ in range(length):
+        segments.append(Segment(index=len(segments), curve=0.0))
+
+
+def _add_bend(segments: list[Segment], peak: float, length: int) -> None:
+    """A self-cancelling curve event: curve follows one full sine cycle
+    (0 -> +peak -> 0 -> -peak -> 0), so the *heading* (the running
+    direction total in build_track) returns to exactly what it was
+    before the bend. That's what makes the following straight actually
+    render straight instead of carrying on at a permanent diagonal --
+    only the lateral position (world_x) ends up shifted, which is what a
+    real curve-then-straight-again road segment should look like.
+
+    peak > 0 reads as a right-then-left bend (i.e. primarily rightward);
+    peak < 0 is primarily leftward. A short `length` gives a snappy
+    single bend; a longer one reads more like a lazy S-curve.
+    """
+    for i in range(length):
+        t = i / length
+        curve = peak * math.sin(2 * math.pi * t)
         segments.append(Segment(index=len(segments), curve=curve))
-    for i in range(ramp):
-        segments.append(Segment(index=len(segments), curve=curve * (1 - i / ramp)))
 
 
-# One lap's worth of curve sections: (curve strength, length in segments).
-# curve > 0 bends right, curve < 0 bends left. Chosen (and tuned by
-# rendering test frames, see docs/PHASE2_RACE_LOG.md) so the whole course
-# takes roughly 60-90s to finish at a believable arcade cruising speed.
-TRACK_SECTIONS: list[tuple[float, int]] = [
-    (0.0, 50),
-    (0.10, 60),
-    (0.0, 30),
-    (-0.14, 70),
-    (0.0, 40),
-    (0.08, 40),
-    (-0.08, 40),
-    (0.0, 50),
-    (0.16, 50),
-    (0.0, 60),
-    (-0.10, 50),
-    (0.0, 80),
+# One lap's worth of straights and bends, in order. Bends are
+# self-cancelling (see _add_bend) so the road promptly reads as straight
+# again right after each one -- no lingering diagonal drift -- while
+# still allowing genuine S-curves and left/right bends. Chosen (and
+# tuned by rendering test frames, see docs/PHASE2_RACE_LOG.md) so the
+# whole course takes roughly 60-90s at a believable arcade cruising speed.
+TRACK_EVENTS: list[tuple[str, float, int]] = [
+    ("straight", 0.0, 60),
+    ("bend", 0.30, 40),    # quick right bend, back to straight
+    ("straight", 0.0, 45),
+    ("bend", -0.40, 50),   # sharper left bend
+    ("straight", 0.0, 45),
+    ("bend", 0.35, 70),    # lazier S-curve (right then left)
+    ("straight", 0.0, 50),
+    ("bend", 0.45, 45),    # sharp right bend
+    ("straight", 0.0, 45),
+    ("bend", -0.30, 45),   # left bend
+    ("straight", 0.0, 55),
+    ("bend", 0.40, 35),    # snappy right-left chicane
+    ("straight", 0.0, 90),  # final straight to the finish
 ]
 
 
-def build_track(sections: list[tuple[float, int]] = TRACK_SECTIONS) -> list[Segment]:
+def build_track(events: list[tuple[str, float, int]] = TRACK_EVENTS) -> list[Segment]:
     segments: list[Segment] = []
-    for curve, length in sections:
-        _add_section(segments, curve, length)
+    for kind, peak, length in events:
+        if kind == "straight":
+            _add_straight(segments, length)
+        elif kind == "bend":
+            _add_bend(segments, peak, length)
+        else:
+            raise ValueError(f"unknown track event kind: {kind!r}")
 
     direction = 0.0
     world_x = 0.0
