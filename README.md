@@ -132,7 +132,7 @@ Current committed values (real-hardware-verified, 2026-09-02):
 {
   "output_width": 1024,
   "output_height": 600,
-  "fullscreen": false,
+  "fullscreen": true,
   "left_viewport": { "x": 152, "y": 175, "width": 280, "height": 282 },
   "right_viewport": { "x": 532, "y": 171, "width": 280, "height": 282 },
   "swap_eyes": false,
@@ -203,10 +203,8 @@ Only after this is done and `config.json` reflects real, verified
 numbers should Phase 2 (the actual racing game) begin.
 
 **Status: done.** See `docs/PHASE1_CALIBRATION_LOG.md` for the record of
-what was checked. One thing worth a second look before Phase 2: the
-saved `fullscreen` value is currently `false` (windowed) — confirm
-whether that's intentional for actual play through the accessory, or
-whether it should be `true`.
+what was checked. `fullscreen` is set to `true`, matching how the
+accessory is actually used.
 
 ## Project layout
 

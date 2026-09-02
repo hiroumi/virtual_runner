@@ -1,7 +1,7 @@
 {
   "output_width": 1024,
   "output_height": 600,
-  "fullscreen": false,
+  "fullscreen": true,
   "left_viewport": {
     "x": 152,
     "y": 175,
