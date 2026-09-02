@@ -23,7 +23,7 @@ import random
 import pygame
 
 from config import load_config, save_config
-from road import DRAW_DISTANCE, ROAD_WIDTH, SEGMENT_LENGTH, build_track, track_length
+from road import DRAW_DISTANCE, ROAD_WIDTH, SEGMENT_LENGTH, build_track, curve_at, track_length, world_x_at
 from stereo_renderer import StereoRenderer
 
 BLACK = (0, 0, 0)
@@ -275,15 +275,20 @@ class Game:
                 steer += 1.0
             self.player.x += steer * STEER_RATE * speed_frac * dt
 
-            segment = self._segment_at(self.player.z)
-            self.current_curve = segment.curve
-            self.player.x -= segment.curve * CENTRIFUGAL * speed_frac * dt
+            # Interpolated, not the coarse per-segment value: during a
+            # curve, consecutive segments' curve/world_x can differ by a
+            # large fraction of the road width, so sampling them as a
+            # step function made the whole view visibly hop once per
+            # segment (~every 60-70ms at speed) instead of panning
+            # smoothly through the turn.
+            self.current_curve = curve_at(self.segments, self.player.z)
+            self.player.x -= self.current_curve * CENTRIFUGAL * speed_frac * dt
             self.player.x = max(-PLAYER_X_LIMIT, min(PLAYER_X_LIMIT, self.player.x))
 
             # Background pans opposite the curve (as if the camera itself
             # were yawing into the turn) and eases back once the curve
             # straightens out again -- see the BG_SHIFT_* comment above.
-            target_bg_shift = -segment.curve * speed_frac * BG_SHIFT_SCALE
+            target_bg_shift = -self.current_curve * speed_frac * BG_SHIFT_SCALE
             self.bg_offset += (target_bg_shift - self.bg_offset) * min(1.0, BG_SHIFT_SMOOTHING * dt)
 
             self.player.z += self.player.speed * dt
@@ -352,7 +357,10 @@ class Game:
         self.renderer.draw_world(250.0, draw)
 
     def _road_center_x(self) -> float:
-        return self._segment_at(self.player.z).world_x + self.player.x * ROAD_WIDTH
+        # Interpolated (see world_x_at's docstring) -- this is the
+        # camera's lateral reference point, sampled every frame, so any
+        # coarseness here shows up directly as a jerky/stepped view.
+        return world_x_at(self.segments, self.player.z) + self.player.x * ROAD_WIDTH
 
     def _draw_road(self) -> None:
         renderer = self.renderer
@@ -428,11 +436,14 @@ class Game:
         self.renderer.draw_world(tz, draw)
 
     def _draw_traffic_car(self, car: TrafficCar) -> None:
-        seg = self._segment_at(car.z)
+        # Interpolated like the camera reference (world_x_at) since a
+        # traffic car's z keeps advancing frame to frame, unlike static
+        # roadside decor -- otherwise it would visibly hop sideways once
+        # per segment while cornering, same as the camera did.
         cam_x = self._road_center_x()
         cam_z = self.player.z
         width, height = self.renderer.left_surface.get_size()
-        world_x = seg.world_x + car.x * ROAD_WIDTH
+        world_x = world_x_at(self.segments, car.z) + car.x * ROAD_WIDTH
         sx, sy, sw, tz = project(world_x, car.z, cam_x, cam_z, width, height)
         if tz > SEGMENT_LENGTH * (DRAW_DISTANCE + 1) or car.z < cam_z:
             return

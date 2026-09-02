@@ -395,6 +395,27 @@ Together they turn "the road is diagonal, the car isn't" into "we're
 banking into the curve" -- see `docs/PHASE2_RACE_LOG.md` for the request
 that prompted this and how it was verified.
 
+### Smooth cornering: interpolating between segments
+
+Segments are 3 world units long, and during a curve consecutive
+segments' `world_x` can differ by a large fraction of the road's width.
+Early on, the camera's lateral reference (`_road_center_x`) and the
+"current curve" used for centrifugal force / background pan / car lean
+all sampled that value at the coarse per-segment resolution -- fine on a
+straight (where it never changes between segments), but on a curve it
+meant the whole view stayed still for a few frames and then hopped by a
+large step the instant the camera crossed into the next segment,
+reported as choppy/janky cornering.
+
+`road.py` now exposes `world_x_at()` / `curve_at()`, which linearly
+interpolate between the two nearest segments instead of snapping to one.
+Every per-frame lookup of a moving thing's lateral position (the camera,
+traffic cars) goes through these; static roadside decor doesn't need to,
+since its world_z never changes frame to frame. `tests/test_road.py`
+has a regression test asserting the interpolated value can't jump more
+than a small bound over a small step, specifically in one of the sharper
+curve regions.
+
 ### What to check on the real accessory
 
 Same idea as the Phase 2 test scene checklist above, but now while

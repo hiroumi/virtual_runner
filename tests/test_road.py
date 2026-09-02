@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from road import SEGMENT_LENGTH, build_track, segment_at, track_length
+from road import SEGMENT_LENGTH, build_track, curve_at, segment_at, track_length, world_x_at
 
 
 def test_track_has_segments_and_positive_length():
@@ -38,3 +38,52 @@ def test_segment_at_clamps_to_track_bounds():
 def test_straight_section_has_zero_curve():
     segs = build_track()
     assert segs[0].curve == 0.0
+
+
+def test_world_x_at_matches_segment_values_at_boundaries():
+    segs = build_track()
+    for i in (0, 50, 200, len(segs) - 1):
+        assert world_x_at(segs, i * SEGMENT_LENGTH) == segs[i].world_x
+
+
+def test_curve_at_matches_segment_values_at_boundaries():
+    segs = build_track()
+    for i in (0, 50, 200, len(segs) - 1):
+        assert curve_at(segs, i * SEGMENT_LENGTH) == segs[i].curve
+
+
+def test_world_x_at_is_smooth_within_a_curve_not_stepped():
+    # Regression test: using the coarse per-segment world_x as a
+    # continuously-sampled camera reference made the whole view visibly
+    # hop once per segment while cornering (reported as choppy/janky
+    # cornering). world_x_at must vary smoothly with world_z instead of
+    # jumping by a large fraction of a segment's world_x delta in a
+    # single small step.
+    segs = build_track()
+    # segments 390-420 are inside one of the sharper bends (see
+    # docs/PHASE2_RACE_LOG.md tuning notes).
+    z0 = 390 * SEGMENT_LENGTH
+    fine_step = SEGMENT_LENGTH / 20
+    prev = world_x_at(segs, z0)
+    max_delta = 0.0
+    for i in range(1, 400):
+        cur = world_x_at(segs, z0 + i * fine_step)
+        max_delta = max(max_delta, abs(cur - prev))
+        prev = cur
+    # A per-segment jump in this region is > 3 world units (see the
+    # bug report); a fine step should move a small, bounded fraction
+    # of that.
+    assert max_delta < 0.5
+
+
+def test_curve_at_interpolates_between_segments():
+    segs = build_track()
+    # Find two adjacent segments with different curve values.
+    for i in range(len(segs) - 1):
+        if segs[i].curve != segs[i + 1].curve:
+            midpoint = curve_at(segs, (i + 0.5) * SEGMENT_LENGTH)
+            expected = (segs[i].curve + segs[i + 1].curve) / 2
+            assert abs(midpoint - expected) < 1e-9
+            break
+    else:
+        raise AssertionError("expected at least one curve change between segments")

@@ -115,5 +115,33 @@ def segment_at(segments: list[Segment], world_z: float) -> Segment:
     return segments[idx]
 
 
+def _interp_index_frac(segments: list[Segment], world_z: float) -> tuple[int, int, float]:
+    idx_f = world_z / SEGMENT_LENGTH
+    i0 = max(0, min(len(segments) - 1, int(idx_f)))
+    i1 = min(i0 + 1, len(segments) - 1)
+    frac = max(0.0, min(1.0, idx_f - i0))
+    return i0, i1, frac
+
+
+def world_x_at(segments: list[Segment], world_z: float) -> float:
+    """world_x at an arbitrary (non-segment-aligned) world_z, linearly
+    interpolated between the two nearest segments. During a curve,
+    consecutive segments' world_x can differ by a large fraction of the
+    road width, so using the coarse per-segment value directly as the
+    camera's lateral reference makes the whole view visibly hop once per
+    segment (roughly every 60-70ms at speed) instead of panning smoothly
+    -- this is what fixes that."""
+    i0, i1, frac = _interp_index_frac(segments, world_z)
+    return segments[i0].world_x * (1 - frac) + segments[i1].world_x * frac
+
+
+def curve_at(segments: list[Segment], world_z: float) -> float:
+    """Same interpolation as world_x_at, for curve -- smooths the
+    centrifugal force and the cornering visual cues (background pan, car
+    lean) instead of having them step once per segment."""
+    i0, i1, frac = _interp_index_frac(segments, world_z)
+    return segments[i0].curve * (1 - frac) + segments[i1].curve * frac
+
+
 def track_length(segments: list[Segment]) -> float:
     return len(segments) * SEGMENT_LENGTH
