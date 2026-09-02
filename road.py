@@ -60,23 +60,27 @@ def _add_bend(segments: list[Segment], peak: float, length: int) -> None:
 # One lap's worth of straights and bends, in order. Bends are
 # self-cancelling (see _add_bend) so the road promptly reads as straight
 # again right after each one -- no lingering diagonal drift -- while
-# still allowing genuine S-curves and left/right bends. Chosen (and
-# tuned by rendering test frames, see docs/PHASE2_RACE_LOG.md) so the
-# whole course takes roughly 60-90s at a believable arcade cruising speed.
+# still allowing genuine S-curves and left/right bends. The big sweeping
+# bends are deliberately low-peak/long rather than high-peak/short, so
+# they can be taken at speed instead of forcing a lift off the gas; only
+# the one chicane near the end is kept short and snappy on purpose.
+# Chosen (and tuned by rendering test frames and driving simulations, see
+# docs/PHASE2_RACE_LOG.md) so the whole course takes roughly 60-90s at a
+# believable arcade cruising speed.
 TRACK_EVENTS: list[tuple[str, float, int]] = [
-    ("straight", 0.0, 60),
-    ("bend", 0.30, 40),    # quick right bend, back to straight
-    ("straight", 0.0, 45),
-    ("bend", -0.40, 50),   # sharper left bend
-    ("straight", 0.0, 45),
-    ("bend", 0.35, 70),    # lazier S-curve (right then left)
     ("straight", 0.0, 50),
-    ("bend", 0.45, 45),    # sharp right bend
+    ("bend", 0.18, 80),    # long, gentle right sweep -- flat-out speed
     ("straight", 0.0, 45),
-    ("bend", -0.30, 45),   # left bend
+    ("bend", -0.22, 90),   # long, gentle left sweep
+    ("straight", 0.0, 45),
+    ("bend", 0.20, 110),   # lazy, wide S-curve
+    ("straight", 0.0, 50),
+    ("bend", 0.28, 70),    # medium right sweep, a bit more character
+    ("straight", 0.0, 45),
+    ("bend", -0.20, 70),   # medium left sweep
     ("straight", 0.0, 55),
-    ("bend", 0.40, 35),    # snappy right-left chicane
-    ("straight", 0.0, 90),  # final straight to the finish
+    ("bend", 0.32, 40),    # snappy right-left chicane (kept tight on purpose)
+    ("straight", 0.0, 80),  # final straight to the finish
 ]
 
 
