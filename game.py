@@ -51,13 +51,18 @@ CAMERA_DEPTH = 1.0 / math.tan(math.radians(FOV_DEG / 2))
 RACE_TIME = 90.0
 PLAYER_CAR_DEPTH = 3.0  # matches the Phase 2 test scene's tuned value
 
-# HUD shows speed_kmh = player.speed * 4, so MAX_SPEED=80 reads as "320".
-MAX_SPEED = 80.0
-OFFROAD_MAX_SPEED = 36.0
-ACCEL = 44.0
-BRAKE = 124.0
-FRICTION = 21.0
-OFFROAD_FRICTION = 80.0
+# The speedometer always reads HUD_MAX_DISPLAY_SPEED at MAX_SPEED,
+# regardless of what MAX_SPEED actually is -- this lets the underlying
+# sim's pace be tuned (i.e. actually made faster) independently of what
+# number the dial shows at the top end. Requested as: keep the display
+# pinned at "320" while making the game itself feel like a genuine ~360.
+HUD_MAX_DISPLAY_SPEED = 320.0
+MAX_SPEED = 90.0
+OFFROAD_MAX_SPEED = 40.0
+ACCEL = 49.5
+BRAKE = 139.5
+FRICTION = 23.6
+OFFROAD_FRICTION = 90.0
 STEER_RATE = 2.0
 # Kept low enough that even the sharpest bend on the course can be taken
 # flat out with no steering input at all without running off the road --
@@ -83,7 +88,7 @@ LANE_COUNT = 3  # American-style multi-lane road
 LANE_DIVIDER_FRACS = [(2 * i - LANE_COUNT) / LANE_COUNT for i in range(1, LANE_COUNT)]
 LANE_LINE_HALF_WIDTH = 0.35  # world units
 
-TRAFFIC_SPEED = 25.0
+TRAFFIC_SPEED = 28.0
 COLLISION_Z_RANGE = SEGMENT_LENGTH * 2.5
 COLLISION_X_RANGE = 0.7
 COLLISION_PENALTY = 0.5
@@ -467,7 +472,7 @@ class Game:
 
     def _draw_hud(self, surf: pygame.Surface, ox: float) -> None:
         w, h = surf.get_size()
-        speed_kmh = int(self.player.speed * 4)
+        speed_kmh = int(self.player.speed / MAX_SPEED * HUD_MAX_DISPLAY_SPEED)
         boxes = [
             ("TIME", f"{int(self.time_left):02d}"),
             ("SCORE", f"{int(self.score):06d}"),

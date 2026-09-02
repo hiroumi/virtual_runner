@@ -68,25 +68,30 @@ def _add_bend(segments: list[Segment], peak: float, length: int) -> None:
 # docs/PHASE2_RACE_LOG.md) so the whole course takes roughly 60-90s at a
 # believable arcade cruising speed.
 #
-# Every length below (bends included, this time) is scaled by the same
-# ratio as game.MAX_SPEED's increases, so time-in-curve -- and therefore
-# both the safety-margin math and the felt duration of each bend -- stays
-# the same as top speed climbs, instead of the same bend suddenly feeling
-# more sudden because it's now covered in less real time. Peak curve
-# values are untouched; only length scales.
+# Bend length was scaled with game.MAX_SPEED's increases so time-in-curve
+# -- and therefore both the safety-margin math and the felt duration of
+# each bend -- stays the same as top speed climbs, instead of the same
+# bend suddenly feeling more sudden because it's now covered in less
+# real time. On top of that, every big sweeping bend here has its length
+# roughly doubled again and its peak curve roughly halved (peak*length
+# held constant, so the safety margin doesn't change) to read as a wide,
+# lazy highway curve you can hold flat-out through, rather than a
+# tighter bend that's merely survivable at speed. The one chicane is
+# only doubled in length, not halved in peak, since it's meant to stay a
+# short, snappy flick for contrast.
 TRACK_EVENTS: list[tuple[str, float, int]] = [
     ("straight", 0.0, 120),
-    ("bend", 0.18, 105),   # long, gentle right sweep -- flat-out speed
+    ("bend", 0.09, 210),   # long, gentle right sweep -- flat-out speed
     ("straight", 0.0, 115),
-    ("bend", -0.22, 120),  # long, gentle left sweep
+    ("bend", -0.11, 240),  # long, gentle left sweep
     ("straight", 0.0, 115),
-    ("bend", 0.20, 145),   # lazy, wide S-curve
+    ("bend", 0.10, 290),   # lazy, wide S-curve
     ("straight", 0.0, 120),
-    ("bend", 0.28, 95),    # medium right sweep, a bit more character
+    ("bend", 0.14, 190),   # medium right sweep, a bit more character
     ("straight", 0.0, 115),
-    ("bend", -0.20, 95),   # medium left sweep
+    ("bend", -0.10, 190),  # medium left sweep
     ("straight", 0.0, 125),
-    ("bend", 0.32, 55),    # snappy right-left chicane (kept tight on purpose)
+    ("bend", 0.32, 110),   # snappy right-left chicane (kept tight on purpose)
     ("straight", 0.0, 160),  # final straight to the finish
 ]
 

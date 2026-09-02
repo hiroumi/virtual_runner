@@ -330,20 +330,35 @@ taken flat-out with no steering at all without running off the road (see
 docs/PHASE2_RACE_LOG.md for the tuning). Steering still matters for lane
 position and dodging traffic, just not as a brake substitute.
 
-Top speed is 80 world-units/sec (HUD shows this as "320", since the
-display is just `speed * 4`). Getting there took two rounds of the same
-scaling exercise (45 -> 60 -> 80), each time scaling accel/brake/friction
-and traffic speed by the same ratio to keep the pedal feel consistent.
+Top speed is 90 world-units/sec, but the speedometer doesn't show that
+number directly: `HUD_MAX_DISPLAY_SPEED` (320) is a separate constant,
+and the display is `speed / MAX_SPEED * HUD_MAX_DISPLAY_SPEED`. That
+decoupling exists on request -- "keep the dial reading 320, but make the
+actual game a bit faster than that (like a real 360)" -- and it means
+`MAX_SPEED` can keep climbing later without the speedometer's top number
+ever having to change.
 
-The second round also scaled every *bend's length* by that same ratio
-(peak curve values untouched), not just the straights. That's not
-arbitrary: how far you drift through a curve with no steering is
-proportional to how long you spend in it (`length / speed`), so scaling
-a bend's length by the same factor as top speed keeps that time --
-and therefore the safety margin and the felt duration of the curve --
-exactly constant as top speed climbs. Verified: max unsteered drift
-through the whole course stayed at ~0.28 across both speed increases,
-and a flat-out clear time stayed around ~58s throughout.
+Getting to this point took three rounds of the same scaling exercise
+(45 -> 60 -> 80 -> 90 world-units/sec), each time scaling accel/brake/
+friction and traffic speed by the same ratio to keep the pedal feel
+consistent, and scaling every *bend's length* by that ratio too (peak
+curve values untouched by this part). That's not arbitrary: how far you
+drift through a curve with no steering is proportional to how long you
+spend in it (`length / speed`), so scaling a bend's length by the same
+factor as top speed keeps that time -- and therefore the safety margin
+and the felt duration of the curve -- exactly constant as top speed
+climbs.
+
+On top of that, the big sweeping bends (not the one intentionally sharp
+chicane) later had their length roughly doubled again and their peak
+curve roughly halved -- `peak * length` held constant, so the safety
+math doesn't move -- to read as wide, lazy highway curves you hold
+flat-out through rather than bends that are merely survivable at speed.
+Verified by simulation throughout every round: max unsteered drift
+through the whole course has stayed in the 0.28-0.30 range regardless of
+how much top speed or curve length changed, and the flat-out clear time
+has stayed inside the 60-90s target (currently ~74s with a realistic
+accel ramp, vs. a 70s flat-out floor).
 
 ### Controls
 
