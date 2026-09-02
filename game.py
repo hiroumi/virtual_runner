@@ -65,6 +65,16 @@ STEER_RATE = 2.0
 CENTRIFUGAL = 0.8
 PLAYER_X_LIMIT = 2.2
 
+# Background parallax + car lean: without these, a curve only bends the
+# road while the horizon/background and the player's own car stay put on
+# screen, which reads as "the road appeared crooked" rather than "we are
+# turning." Panning the background opposite the curve (as if the camera
+# itself were yawing into the turn) and nudging the car sprite toward the
+# curve direction gives that sense of drifting into the bend instead.
+BG_SHIFT_SCALE = 110.0    # px of background pan at full curve + full speed
+BG_SHIFT_SMOOTHING = 6.0  # higher = pan reacts to curve changes faster
+CAR_LEAN_SCALE = 11.0     # px the player car sprite nudges toward the turn
+
 LANE_COUNT = 3  # American-style multi-lane road
 # Fractional offsets (of ROAD_WIDTH) of the dashed lines between lanes,
 # e.g. [-1/3, 1/3] for 3 lanes. Traffic lane centers use the same spacing
@@ -154,6 +164,8 @@ class Game:
         self.collision_cooldown = 0.0
         self.show_debug = False
         self.last_frame_ms = 0.0
+        self.bg_offset = 0.0  # smoothed background-parallax pan, see update()
+        self.current_curve = 0.0
 
     def _make_display(self) -> pygame.Surface:
         flags = pygame.FULLSCREEN if self.cfg.fullscreen else 0
@@ -264,8 +276,15 @@ class Game:
             self.player.x += steer * STEER_RATE * speed_frac * dt
 
             segment = self._segment_at(self.player.z)
+            self.current_curve = segment.curve
             self.player.x -= segment.curve * CENTRIFUGAL * speed_frac * dt
             self.player.x = max(-PLAYER_X_LIMIT, min(PLAYER_X_LIMIT, self.player.x))
+
+            # Background pans opposite the curve (as if the camera itself
+            # were yawing into the turn) and eases back once the curve
+            # straightens out again -- see the BG_SHIFT_* comment above.
+            target_bg_shift = -segment.curve * speed_frac * BG_SHIFT_SCALE
+            self.bg_offset += (target_bg_shift - self.bg_offset) * min(1.0, BG_SHIFT_SMOOTHING * dt)
 
             self.player.z += self.player.speed * dt
             self.score += self.player.speed * dt * SCORE_PER_SECOND_PER_SPEED
@@ -315,6 +334,9 @@ class Game:
 
     def _draw_background(self) -> None:
         def draw(surf: pygame.Surface, ox: float) -> None:
+            # bg_offset pans both eyes equally (it's a camera-yaw cue, not
+            # a depth cue) on top of the normal small stereo disparity.
+            ox = ox + self.bg_offset
             w, h = surf.get_size()
             horizon = int(h * 0.5)
             for cx_frac, cy, r in ((0.28, horizon * 0.28, 10), (0.6, horizon * 0.42, 13), (0.82, horizon * 0.2, 8)):
@@ -422,7 +444,13 @@ class Game:
 
     def _draw_player_car(self, surf: pygame.Surface, ox: float) -> None:
         w, h = surf.get_size()
-        cx = w / 2 + self.player.x * 10 + ox
+        speed_frac = self.player.speed / MAX_SPEED
+        # Nudge the car sprite toward the curve direction, in step with
+        # the background panning the opposite way (see _draw_background)
+        # -- together they read as "drifting into the turn" instead of
+        # "still going straight while the road bends."
+        lean = self.current_curve * speed_frac * CAR_LEAN_SCALE
+        cx = w / 2 + self.player.x * 10 + lean + ox
         draw_car(surf, cx, h - 34, 1.0, PLAYER_COLOR)
 
     def _draw_hud(self, surf: pygame.Surface, ox: float) -> None:
