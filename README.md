@@ -330,6 +330,13 @@ taken flat-out with no steering at all without running off the road (see
 docs/PHASE2_RACE_LOG.md for the tuning). Steering still matters for lane
 position and dodging traffic, just not as a brake substitute.
 
+Top speed is 60 world-units/sec (HUD shows this as "240"). Raising it
+from an earlier, more sedate 45 meant scaling accel/brake/friction and
+traffic speed by the same ~33% to keep the feel consistent, and
+extending the course's *straight* sections (bends were left untouched)
+so the whole thing still takes about the same ~58s at a flat-out pace
+instead of finishing under a minute.
+
 ### Controls
 
 | Key | Action |

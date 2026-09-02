@@ -51,12 +51,12 @@ CAMERA_DEPTH = 1.0 / math.tan(math.radians(FOV_DEG / 2))
 RACE_TIME = 90.0
 PLAYER_CAR_DEPTH = 3.0  # matches the Phase 2 test scene's tuned value
 
-MAX_SPEED = 45.0
-OFFROAD_MAX_SPEED = 20.0
-ACCEL = 25.0
-BRAKE = 70.0
-FRICTION = 12.0
-OFFROAD_FRICTION = 45.0
+MAX_SPEED = 60.0
+OFFROAD_MAX_SPEED = 27.0
+ACCEL = 33.0
+BRAKE = 93.0
+FRICTION = 16.0
+OFFROAD_FRICTION = 60.0
 STEER_RATE = 2.0
 # Kept low enough that even the sharpest bend on the course can be taken
 # flat out with no steering input at all without running off the road --
@@ -82,7 +82,7 @@ LANE_COUNT = 3  # American-style multi-lane road
 LANE_DIVIDER_FRACS = [(2 * i - LANE_COUNT) / LANE_COUNT for i in range(1, LANE_COUNT)]
 LANE_LINE_HALF_WIDTH = 0.35  # world units
 
-TRAFFIC_SPEED = 14.0
+TRAFFIC_SPEED = 19.0
 COLLISION_Z_RANGE = SEGMENT_LENGTH * 2.5
 COLLISION_X_RANGE = 0.7
 COLLISION_PENALTY = 0.5

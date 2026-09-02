@@ -66,21 +66,24 @@ def _add_bend(segments: list[Segment], peak: float, length: int) -> None:
 # the one chicane near the end is kept short and snappy on purpose.
 # Chosen (and tuned by rendering test frames and driving simulations, see
 # docs/PHASE2_RACE_LOG.md) so the whole course takes roughly 60-90s at a
-# believable arcade cruising speed.
+# believable arcade cruising speed. Straight lengths were extended
+# alongside game.MAX_SPEED's 45->60 bump to keep that pacing -- bend
+# peak/length values are untouched, since those were tuned separately
+# for smoothness/forgiveness and don't need to change with top speed.
 TRACK_EVENTS: list[tuple[str, float, int]] = [
-    ("straight", 0.0, 50),
+    ("straight", 0.0, 90),
     ("bend", 0.18, 80),    # long, gentle right sweep -- flat-out speed
-    ("straight", 0.0, 45),
+    ("straight", 0.0, 85),
     ("bend", -0.22, 90),   # long, gentle left sweep
-    ("straight", 0.0, 45),
+    ("straight", 0.0, 85),
     ("bend", 0.20, 110),   # lazy, wide S-curve
-    ("straight", 0.0, 50),
+    ("straight", 0.0, 90),
     ("bend", 0.28, 70),    # medium right sweep, a bit more character
-    ("straight", 0.0, 45),
+    ("straight", 0.0, 85),
     ("bend", -0.20, 70),   # medium left sweep
-    ("straight", 0.0, 55),
+    ("straight", 0.0, 95),
     ("bend", 0.32, 40),    # snappy right-left chicane (kept tight on purpose)
-    ("straight", 0.0, 80),  # final straight to the finish
+    ("straight", 0.0, 120),  # final straight to the finish
 ]
 
 
