@@ -367,6 +367,34 @@ strong inward shift and the segment right at the horizon gets almost
 none — a real per-segment gradient, not the whole road shifted as one
 flat plane. `road.py` documents the segment/curve model in more detail.
 
+### Selling the turn: background pan + car lean
+
+The segment-projection technique above never rotates the camera -- a
+curve only ever shifts the road's `world_x` relative to a screen-locked
+vanishing point. Left alone, that reads as "the road appeared crooked"
+rather than "we're turning": the background and the player's own car
+stay perfectly still on screen while only the road bends.
+
+Two small, purely cosmetic, zero-parallax additions in `game.py` fix
+that (the classic fix for this exact problem in segment-based pseudo-3D
+racers):
+
+- **Background pan.** Each frame, the sky/mountains layer eases toward a
+  target horizontal offset of `-current_segment.curve * speed_fraction *
+  BG_SHIFT_SCALE` (both eyes shifted equally -- this is a camera-yaw cue,
+  not a depth cue, so it rides on top of the small existing stereo
+  disparity rather than replacing it). A right curve pans the background
+  left, as if the camera itself were swinging right into the turn; the
+  pan eases back to centered the moment the curve straightens out again.
+- **Car lean.** The player's car sprite nudges a few pixels *toward* the
+  curve direction (`current_segment.curve * speed_fraction *
+  CAR_LEAN_SCALE`), so it visually leans into the bend instead of sitting
+  dead-center while the world moves around it.
+
+Together they turn "the road is diagonal, the car isn't" into "we're
+banking into the curve" -- see `docs/PHASE2_RACE_LOG.md` for the request
+that prompted this and how it was verified.
+
 ### What to check on the real accessory
 
 Same idea as the Phase 2 test scene checklist above, but now while
