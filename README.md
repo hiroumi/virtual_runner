@@ -1,4 +1,4 @@
-# Virtual Boy Stereo Racing (Phase 1: Calibrator)
+# Virtual Boy Stereo Racing
 
 Windows 11 desktop prototype for a stereoscopic pseudo-3D racing game,
 displayed through Nintendo's **Virtual Boy for Nintendo Switch** accessory
@@ -29,6 +29,10 @@ placeholders (rectangles, lines, circles) until real original art exists.
   steer, traffic cars, collision, one ~60-90s course, TIME/SCORE/SPEED
   HUD) rendered through the same `StereoRenderer`. Log:
   `docs/PHASE2_RACE_LOG.md` (Japanese).
+
+**Picking this back up after a break?** Start at
+`docs/NEXT_STEPS.md` (Japanese) — it's a handoff summary of exactly
+where things stand, current tuning values, and candidate next tasks.
 
 ## Why a calibrator comes first
 
@@ -481,7 +485,7 @@ requirements.txt          runtime dependency (pygame)
 requirements-dev.txt       + pytest, for running tests/
 tests/                    automated tests (headless, SDL dummy driver)
 assets/                   placeholder for future art (empty for now)
-docs/                     working log (Japanese)
+docs/                     working log + NEXT_STEPS.md handoff (Japanese)
 ```
 
 ## Tests
