@@ -90,6 +90,18 @@ class Config:
     parallax_scale: float = 1.0
     content_scale: float = 1.0
 
+    # Depth -> disparity projection (see stereo_renderer.calculate_disparity).
+    # screen_depth is the world distance at which disparity is exactly zero
+    # (the "convergence plane"); objects nearer than this get positive
+    # (inward/crossed, pop-toward-viewer) disparity, objects farther get a
+    # small negative (outward) disparity. disparity_k scales how quickly
+    # disparity grows as depth shrinks. max_disparity_px /
+    # max_negative_disparity_px are hard eye-strain safety caps.
+    screen_depth: float = 20.0
+    disparity_k: float = 250.0
+    max_disparity_px: float = 40.0
+    max_negative_disparity_px: float = 8.0
+
     def clamp(self) -> None:
         self.output_width = max(320, int(self.output_width))
         self.output_height = max(240, int(self.output_height))
@@ -97,6 +109,12 @@ class Config:
         self.right_viewport.clamp(self.output_width, self.output_height)
         self.parallax_scale = max(0.0, min(2.0, float(self.parallax_scale)))
         self.content_scale = max(0.25, min(3.0, float(self.content_scale)))
+        self.screen_depth = max(1.0, min(1000.0, float(self.screen_depth)))
+        self.disparity_k = max(1.0, min(2000.0, float(self.disparity_k)))
+        self.max_disparity_px = max(0.0, min(120.0, float(self.max_disparity_px)))
+        self.max_negative_disparity_px = max(
+            0.0, min(60.0, float(self.max_negative_disparity_px))
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -112,6 +130,10 @@ class Config:
             "flip_right_v": self.flip_right_v,
             "parallax_scale": self.parallax_scale,
             "content_scale": self.content_scale,
+            "screen_depth": self.screen_depth,
+            "disparity_k": self.disparity_k,
+            "max_disparity_px": self.max_disparity_px,
+            "max_negative_disparity_px": self.max_negative_disparity_px,
         }
 
     def copy(self) -> "Config":
@@ -147,6 +169,14 @@ def json_to_config(data: dict) -> Config:
         flip_right_v=bool(data.get("flip_right_v", defaults.flip_right_v)),
         parallax_scale=float(data.get("parallax_scale", defaults.parallax_scale)),
         content_scale=float(data.get("content_scale", defaults.content_scale)),
+        screen_depth=float(data.get("screen_depth", defaults.screen_depth)),
+        disparity_k=float(data.get("disparity_k", defaults.disparity_k)),
+        max_disparity_px=float(
+            data.get("max_disparity_px", defaults.max_disparity_px)
+        ),
+        max_negative_disparity_px=float(
+            data.get("max_negative_disparity_px", defaults.max_negative_disparity_px)
+        ),
     )
     cfg.clamp()
     return cfg

@@ -20,5 +20,9 @@
   "flip_right_h": false,
   "flip_right_v": false,
   "parallax_scale": 1.0,
-  "content_scale": 1.0
+  "content_scale": 1.0,
+  "screen_depth": 20.0,
+  "disparity_k": 250.0,
+  "max_disparity_px": 40.0,
+  "max_negative_disparity_px": 8.0
 }

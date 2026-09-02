@@ -13,17 +13,19 @@ No original Nintendo/Virtual Boy names, logos, characters, vehicles,
 artwork, or music are used or planned. All visuals are original geometric
 placeholders (rectangles, lines, circles) until real original art exists.
 
-## Current status: Phase 1 only
+## Current status
 
-Only the **display calibrator** is implemented. The racing game itself
-(Phase 2) is intentionally **not started** — `stereo_renderer.py` is a
-placeholder describing the planned shared rendering layer, and `main.py`
-currently just launches the calibrator.
-
-**Update (2026-09-02): real-hardware calibration complete.** `config.json`
-now holds values confirmed on the actual accessory (see
-`docs/PHASE1_CALIBRATION_LOG.md` for the log, in Japanese). Phase 2 can
-begin from here.
+- **Phase 1 (calibrator): done.** `config.json` holds values confirmed on
+  the actual accessory (log: `docs/PHASE1_CALIBRATION_LOG.md`, Japanese).
+- **Phase 2, step 1 (static stereo depth test scene): done.**
+  `stereo_renderer.py` now implements the real depth→disparity math, and
+  `phase2_test_scene.py` is a fixed (non-scrolling) confirmation scene
+  built from original placeholder shapes, for verifying the stereo depth
+  ordering looks right through the accessory before writing the actual
+  driving/scrolling game. Log: `docs/PHASE2_STEREO_TEST_LOG.md`
+  (Japanese).
+- **Phase 2, the actual racing game: not started.** No road scrolling, no
+  input/physics, no AI cars yet.
 
 ## Why a calibrator comes first
 
@@ -206,21 +208,126 @@ numbers should Phase 2 (the actual racing game) begin.
 what was checked. `fullscreen` is set to `true`, matching how the
 accessory is actually used.
 
+## Phase 2, step 1: static stereo depth test scene
+
+Before building the actual scrolling racing game, `phase2_test_scene.py`
+renders a fixed scene (sky/clouds, mountains, a road with several dash
+markers at different distances, a distant car, roadside trees, and the
+player's own car — all original placeholder shapes, no imported art) so
+the depth-based stereo effect can be checked on the real accessory in
+isolation, before any gameplay logic exists.
+
+Run it with:
+
+```
+python main.py --stereo-test
+```
+
+or directly: `python phase2_test_scene.py`. Same `--test-frames N`
+headless smoke-test flag as the calibrator.
+
+### How depth becomes disparity
+
+`stereo_renderer.calculate_disparity(depth, parallax_scale, cfg)` is the
+single function every object's stereo offset goes through — nothing
+hand-picks a per-object pixel shift:
+
+```
+raw = disparity_k * (1/depth - 1/screen_depth)
+disparity = clamp(raw * parallax_scale, -max_negative_disparity_px, +max_disparity_px)
+
+left_eye_x  = projected_x + disparity / 2
+right_eye_x = projected_x - disparity / 2
+```
+
+- `screen_depth` is the world distance at which disparity is exactly
+  zero (the convergence plane / "screen depth"). Objects nearer than
+  this automatically get positive (inward / crossed) disparity — they
+  pop toward the viewer. Objects farther automatically get a small
+  negative (outward) disparity — they recede behind the screen. No
+  per-category special-casing is needed; it all falls out of each
+  object's `depth` value alone.
+- `max_disparity_px` / `max_negative_disparity_px` are hard safety
+  caps in pixels, applied *after* `parallax_scale`, so turning parallax
+  up can never exceed them — this is the "safe upper limit" the eye-strain
+  requirement calls for. In the test scene, an object at the cap is
+  flagged `(CLAMPED +/-)` in the debug overlay.
+- `StereoRenderer.draw_world(depth, draw_fn)` calls `draw_fn` once per
+  eye with the correct signed pixel offset already applied; `draw_flat(draw_fn)`
+  is the zero-disparity equivalent for HUD/text. Game/simulation code
+  calls these — it never computes eye offsets itself, and it never runs
+  the simulation twice.
+- Vertical disparity is never introduced by this system — only
+  `x_offset` exists, matching "左右の垂直視差は原則ゼロ".
+
+Object depths in the test scene (world units, arbitrary but internally
+consistent) were chosen to reproduce every category from the spec
+without special-casing, purely via the formula above:
+
+| Object | depth | resulting disparity* |
+|---|---|---|
+| HUD (TIME/SCORE/SPEED) | n/a (drawn flat) | 0px always |
+| Sky / clouds, mountains | 300 / 250 | -8.0px (clamped, small outward) |
+| Far car | 22 | -1.1px (near zero) |
+| Mid roadside trees | 11–13 | +6.7 to +10.2px |
+| Road dash markers | 4–40 | +40.0px (nearest) fading to -6.2px (farthest) |
+| Near roadside palms | 6 | +29.2px |
+| Player's own car | 3 | +40.0px (clamped, largest) |
+
+*at `parallax_scale=1.0`, the calibrated `config.json` defaults.
+
+### Controls (also shown on-screen)
+
+| Key | Action |
+|---|---|
+| `Up` / `Down` | Increase / decrease live `parallax_scale` (Shift = bigger step) |
+| `Z` | Toggle all parallax off (every object snaps to zero disparity, for A/B comparison) |
+| `I` | Debug: invert disparity sign for every object (sanity-check convergence direction) |
+| `F` | Toggle fullscreen / windowed |
+| `S` | Save the current live `parallax_scale` into `config.json` |
+| `Esc` | Quit |
+
+### What to check on the real accessory
+
+1. `python main.py --stereo-test` (press `F` for fullscreen).
+2. Confirm the HUD strip at the bottom looks flat / on the screen glass
+   in both eyes (no doubling or drift).
+3. Confirm sky and mountains read as farthest away, the player's own car
+   reads as nearest (slightly popping toward you), and the ordering in
+   between (far car → mid trees → near palms) feels like a smooth
+   progression rather than distinct "layers."
+4. Use `Up`/`Down` to find a `parallax_scale` that feels comfortable —
+   err low. Press `S` to save it back into `config.json`.
+5. Use `Z` to confirm the zero-parallax state genuinely looks flat (a good
+   sanity check that disparity is actually being applied, not just
+   placebo). Use `I` only as a debug aid if the depth ordering feels
+   backwards — it should not be needed once the scene reads correctly.
+
+Only after this reads correctly on the real accessory should the actual
+scrolling/driving game logic be built on top of `StereoRenderer`.
+
 ## Project layout
 
 ```
-main.py              entry point (currently just launches the calibrator)
-calibration.py        Phase 1: the calibrator itself
-config.py             Config/Rect dataclasses, JSON load/save, clamping
-stereo_renderer.py     Phase 2 placeholder (not implemented; documents the
-                       planned shared stereo-rendering API)
-config.json            real-hardware-verified calibration (committed)
-config.example.json     original placeholder defaults (committed)
-requirements.txt        runtime dependency (pygame)
-requirements-dev.txt     + pytest, for running tests/
-tests/                  automated tests (headless, SDL dummy driver)
-assets/                 placeholder for future art (empty for now)
-docs/                   working log (Japanese)
+main.py                 entry point: calibrator by default, or
+                        --stereo-test for the Phase 2 depth test scene
+calibration.py           Phase 1: the calibrator itself
+stereo_renderer.py        shared stereo drawing layer: depth -> disparity
+                        math (calculate_disparity) and the StereoRenderer
+                        class that composites both eyes into the
+                        calibrated viewports. Racing-game logic will
+                        render through this; it has no game code itself.
+phase2_test_scene.py      Phase 2 step 1: static depth/disparity
+                        confirmation scene (no scrolling/game logic yet)
+config.py                Config/Rect dataclasses, JSON load/save, clamping
+config.json               real-hardware-verified calibration + disparity
+                        safety settings (committed)
+config.example.json       original placeholder defaults (committed)
+requirements.txt          runtime dependency (pygame)
+requirements-dev.txt       + pytest, for running tests/
+tests/                    automated tests (headless, SDL dummy driver)
+assets/                   placeholder for future art (empty for now)
+docs/                     working log (Japanese)
 ```
 
 ## Tests
@@ -232,5 +339,7 @@ pytest
 
 Tests run headlessly (`SDL_VIDEODRIVER=dummy`) and cover: config
 load/save/round-trip, fallback-to-defaults on missing/corrupt/invalid
-`config.json`, viewport clamping/recovery, and a full pass over every key
-binding to confirm none of them raises.
+`config.json`, viewport clamping/recovery, every calibrator key binding,
+the depth→disparity formula (zero at `screen_depth`, monotonic, safety
+caps never exceeded even at extreme inputs), and every Phase 2 test-scene
+key binding.

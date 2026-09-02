@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pygame
 
 import calibration
+import phase2_test_scene
 from config import default_config
 
 
@@ -44,6 +45,27 @@ def test_every_key_binding_executes_without_crashing(tmp_path, monkeypatch):
     # Esc must signal the run loop to stop.
     esc = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0)
     assert app._handle_keydown(esc) is False
+    pygame.quit()
+
+
+def test_phase2_test_scene_runs_headless_for_a_few_frames():
+    phase2_test_scene.run(test_frames=5)
+
+
+def test_phase2_every_key_binding_executes_without_crashing(monkeypatch):
+    monkeypatch.setattr(phase2_test_scene, "save_config", lambda cfg, path=None: None)
+
+    pygame.init()
+    pygame.display.set_mode((1024, 600))
+    scene = phase2_test_scene.Phase2TestScene(default_config())
+
+    for key in (pygame.K_UP, pygame.K_DOWN, pygame.K_z, pygame.K_i, pygame.K_f, pygame.K_s):
+        event = pygame.event.Event(pygame.KEYDOWN, key=key, mod=0)
+        assert scene._handle_keydown(event) is True
+        scene._draw()
+
+    esc = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0)
+    assert scene._handle_keydown(esc) is False
     pygame.quit()
 
 
