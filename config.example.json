@@ -1,0 +1,14 @@
+{
+  "output_width": 1024,
+  "output_height": 600,
+  "fullscreen": false,
+  "left_viewport": { "x": 116, "y": 200, "width": 280, "height": 200 },
+  "right_viewport": { "x": 628, "y": 200, "width": 280, "height": 200 },
+  "swap_eyes": false,
+  "flip_left_h": false,
+  "flip_left_v": false,
+  "flip_right_h": false,
+  "flip_right_v": false,
+  "parallax_scale": 1.0,
+  "content_scale": 1.0
+}
