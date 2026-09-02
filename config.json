@@ -1,7 +1,7 @@
 {
   "output_width": 1024,
   "output_height": 600,
-  "fullscreen": true,
+  "fullscreen": false,
   "left_viewport": {
     "x": 152,
     "y": 175,
@@ -19,7 +19,7 @@
   "flip_left_v": false,
   "flip_right_h": false,
   "flip_right_v": false,
-  "parallax_scale": 1.0,
+  "parallax_scale": 1.3000000000000005,
   "content_scale": 1.0,
   "screen_depth": 20.0,
   "disparity_k": 250.0,

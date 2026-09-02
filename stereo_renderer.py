@@ -95,6 +95,16 @@ class StereoRenderer:
         draw_fn(self.left_surface, disparity / 2)
         draw_fn(self.right_surface, -disparity / 2)
 
+    def project_x(self, x: float, depth: float) -> tuple[float, float]:
+        """(left_x, right_x) for a single point at local x with its own
+        depth. Low-level escape hatch for multi-vertex primitives (e.g. a
+        road segment quad whose near/far edges are at different depths)
+        where draw_world's single-depth-per-call model doesn't fit --
+        game code computes each vertex through this and draws the two
+        polygons onto left_surface/right_surface itself."""
+        d = self.compute_disparity(depth)
+        return x + d / 2, x - d / 2
+
     def draw_flat(self, draw_fn) -> None:
         """Zero-parallax draw: HUD, labels, anything meant to sit exactly
         on the screen plane in both eyes."""

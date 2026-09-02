@@ -24,8 +24,11 @@ placeholders (rectangles, lines, circles) until real original art exists.
   ordering looks right through the accessory before writing the actual
   driving/scrolling game. Log: `docs/PHASE2_STEREO_TEST_LOG.md`
   (Japanese).
-- **Phase 2, the actual racing game: not started.** No road scrolling, no
-  input/physics, no AI cars yet.
+- **Phase 2, the racing game: implemented.** `game.py` is a rear-view,
+  segment-based pseudo-3D racer (scrolling curved road, accelerate/brake/
+  steer, traffic cars, collision, one ~60-90s course, TIME/SCORE/SPEED
+  HUD) rendered through the same `StereoRenderer`. Log:
+  `docs/PHASE2_RACE_LOG.md` (Japanese).
 
 ## Why a calibrator comes first
 
@@ -306,6 +309,68 @@ without special-casing, purely via the formula above:
 Only after this reads correctly on the real accessory should the actual
 scrolling/driving game logic be built on top of `StereoRenderer`.
 
+## The racing game
+
+```
+python main.py --race
+```
+
+or directly: `python game.py`. Same `--test-frames N` headless flag.
+
+Rear-view, segment-based scrolling road (the classic "OutRun-style"
+technique: a long line of fixed-length segments, each carrying a curve
+value; integrating curve twice gives a smoothly bending road with no real
+3D geometry). One player car, a handful of slow-moving traffic cars to
+avoid, one course that takes roughly 60-90s to finish at a believable
+cruising speed, TIME/SCORE/SPEED HUD.
+
+### Controls
+
+| Key | Action |
+|---|---|
+| `Up` / `W` | Accelerate |
+| `Down` / `S` | Brake |
+| `Left`/`Right` or `A`/`D` | Steer |
+| `[` / `]` | Decrease / increase live `parallax_scale` |
+| `Z` | Toggle all parallax off (debug A/B) |
+| `I` | Debug: invert disparity sign |
+| `D` | Toggle FPS / frame-time / depth debug overlay |
+| `F` | Toggle fullscreen / windowed |
+| `S` | Save current `parallax_scale` to `config.json` |
+| `R` | Restart the race |
+| `Esc` | Quit |
+
+Driving off the road (`abs(player.x) > 1.0`) caps your top speed and adds
+extra friction. Touching a traffic car cuts your speed and starts a
+1-second collision cooldown so a single graze can't repeatedly stack
+penalties every frame.
+
+### How the road gets its stereo effect
+
+Every sprite (trees, traffic cars, the player's own car, HUD) goes
+through `StereoRenderer.draw_world` / `draw_flat` exactly like the
+Phase 2 test scene — see that section above for the depth->disparity
+formula, which is unchanged.
+
+The road itself is different: a single quad's near edge and far edge are
+at two different distances from the camera, so they need two different
+disparities, not one. Each corner is projected individually through the
+new `StereoRenderer.project_x(local_x, depth)` (returns `(left_x,
+right_x)` for that one point), so the nearest visible segment gets a
+strong inward shift and the segment right at the horizon gets almost
+none — a real per-segment gradient, not the whole road shifted as one
+flat plane. `road.py` documents the segment/curve model in more detail.
+
+### What to check on the real accessory
+
+Same idea as the Phase 2 test scene checklist above, but now while
+actually driving: confirm the road still reads as continuously receding
+into the distance while turning, the player's car stays comfortably "in
+front of the glass," and traffic cars pop toward you convincingly as
+they get closer. Use `[`/`]` to retune `parallax_scale` for comfort
+during actual play (it may want to differ from the static test scene's
+value) and `S` to save it.
+
 ## Project layout
 
 ```
@@ -318,7 +383,11 @@ stereo_renderer.py        shared stereo drawing layer: depth -> disparity
                         calibrated viewports. Racing-game logic will
                         render through this; it has no game code itself.
 phase2_test_scene.py      Phase 2 step 1: static depth/disparity
-                        confirmation scene (no scrolling/game logic yet)
+                        confirmation scene (no scrolling/game logic)
+road.py                  segment-based road/track model (curve, world_x,
+                        world_z) shared by game.py; no drawing in here
+game.py                  Phase 2 step 2: the actual racing game (input,
+                        physics, traffic/collision, HUD, road rendering)
 config.py                Config/Rect dataclasses, JSON load/save, clamping
 config.json               real-hardware-verified calibration + disparity
                         safety settings (committed)
@@ -341,5 +410,8 @@ Tests run headlessly (`SDL_VIDEODRIVER=dummy`) and cover: config
 load/save/round-trip, fallback-to-defaults on missing/corrupt/invalid
 `config.json`, viewport clamping/recovery, every calibrator key binding,
 the depth→disparity formula (zero at `screen_depth`, monotonic, safety
-caps never exceeded even at extreme inputs), and every Phase 2 test-scene
-key binding.
+caps never exceeded even at extreme inputs), every Phase 2 test-scene key
+binding, the track/curve model (reasonable length and lateral range, no
+runaway curve), and the racing game's rules (accelerate/coast/off-road
+speed caps, collision penalty + cooldown, finish/time-up transitions,
+restart, every key binding).
