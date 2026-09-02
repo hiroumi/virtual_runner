@@ -17,7 +17,7 @@ import math
 from dataclasses import dataclass, field
 
 SEGMENT_LENGTH = 3.0  # world units per segment
-ROAD_WIDTH = 9.0      # half-width of the drivable road, world units
+ROAD_WIDTH = 11.0     # half-width of the drivable road, world units (3 lanes)
 RUMBLE_LENGTH = 3     # segments per alternating rumble-strip color band
 DRAW_DISTANCE = 100   # segments rendered ahead of the camera
 

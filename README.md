@@ -320,9 +320,15 @@ or directly: `python game.py`. Same `--test-frames N` headless flag.
 Rear-view, segment-based scrolling road (the classic "OutRun-style"
 technique: a long line of fixed-length segments, each carrying a curve
 value; integrating curve twice gives a smoothly bending road with no real
-3D geometry). One player car, a handful of slow-moving traffic cars to
-avoid, one course that takes roughly 60-90s to finish at a believable
-cruising speed, TIME/SCORE/SPEED HUD.
+3D geometry), 3 lanes with dashed American-style lane dividers. One
+player car, a handful of slow-moving traffic cars to avoid, one course
+that takes roughly 60-90s to finish at a believable cruising speed,
+TIME/SCORE/SPEED HUD.
+
+Cornering is tuned to be forgiving: every curve on the course can be
+taken flat-out with no steering at all without running off the road (see
+docs/PHASE2_RACE_LOG.md for the tuning). Steering still matters for lane
+position and dodging traffic, just not as a brake substitute.
 
 ### Controls
 

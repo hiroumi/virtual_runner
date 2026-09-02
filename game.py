@@ -35,6 +35,7 @@ RUMBLE_DARK = (120, 15, 15)
 RUMBLE_LIGHT = (190, 30, 30)
 ROAD_DARK = (40, 9, 9)
 ROAD_LIGHT = (52, 12, 12)
+LANE_LINE_COLOR = (225, 165, 165)
 TREE_COLOR = (150, 20, 20)
 TRAFFIC_COLOR = (170, 25, 25)
 PLAYER_COLOR = (255, 45, 45)
@@ -56,9 +57,20 @@ ACCEL = 25.0
 BRAKE = 70.0
 FRICTION = 12.0
 OFFROAD_FRICTION = 45.0
-STEER_RATE = 1.6
-CENTRIFUGAL = 2.5
+STEER_RATE = 2.0
+# Kept low enough that even the sharpest bend on the course can be taken
+# flat out with no steering input at all without running off the road --
+# an arcade racer should let you blast through curves, not force braking
+# for every turn (see docs/PHASE2_RACE_LOG.md for the tuning math).
+CENTRIFUGAL = 0.8
 PLAYER_X_LIMIT = 2.2
+
+LANE_COUNT = 3  # American-style multi-lane road
+# Fractional offsets (of ROAD_WIDTH) of the dashed lines between lanes,
+# e.g. [-1/3, 1/3] for 3 lanes. Traffic lane centers use the same spacing
+# (see _build_traffic) so cars visually sit in the middle of a lane.
+LANE_DIVIDER_FRACS = [(2 * i - LANE_COUNT) / LANE_COUNT for i in range(1, LANE_COUNT)]
+LANE_LINE_HALF_WIDTH = 0.35  # world units
 
 TRAFFIC_SPEED = 14.0
 COLLISION_Z_RANGE = SEGMENT_LENGTH * 2.5
@@ -74,7 +86,12 @@ def _font(size: int) -> pygame.font.Font:
 
 
 def project(world_x: float, world_z: float, cam_x: float, cam_z: float, width: float, height: float):
-    trans_z = max(world_z - cam_z, 0.1)
+    # Floor of one segment length, not near-zero: right at the camera the
+    # scale would otherwise blow up to an extreme value, which is
+    # invisible for the wide grass/road quads (they just fill the bottom
+    # of the frame either way) but produced a distracting stray sliver
+    # for the thin lane-divider lines.
+    trans_z = max(world_z - cam_z, SEGMENT_LENGTH)
     scale = CAMERA_DEPTH / trans_z
     sx = width / 2 + scale * (world_x - cam_x) * width / 2
     sy = height / 2 + scale * CAMERA_HEIGHT * height / 2
@@ -148,8 +165,9 @@ class Game:
         start = 120
         end = len(self.segments) - 60
         step = 90
+        lane_centers = [(2 * i - (LANE_COUNT - 1)) / LANE_COUNT for i in range(LANE_COUNT)]
         for base in range(start, max(start + 1, end), step):
-            lane = rng.choice([-0.5, 0.0, 0.5])
+            lane = rng.choice(lane_centers)
             cars.append(TrafficCar(z=base * SEGMENT_LENGTH, x=lane, speed=TRAFFIC_SPEED))
         return cars
 
@@ -352,6 +370,25 @@ class Game:
                 wf, wn = swf * mult, swn * mult
                 pygame.draw.polygon(left, color, [(lf - wf, syf), (lf + wf, syf), (ln + wn, syn), (ln - wn, syn)])
                 pygame.draw.polygon(right, color, [(rf - wf, syf), (rf + wf, syf), (rn + wn, syn), (rn - wn, syn)])
+
+            if dark:
+                # American-style dashed lane dividers: only drawn on the
+                # "dark" rumble bands, which gives them a dashed look for
+                # free using the same alternation as the rumble strips.
+                line_hw_frac = LANE_LINE_HALF_WIDTH / ROAD_WIDTH
+                for frac in LANE_DIVIDER_FRACS:
+                    off_f, off_n = swf * frac, swn * frac
+                    hw_f, hw_n = swf * line_hw_frac, swn * line_hw_frac
+                    lf, rf = renderer.project_x(sxf + off_f, tzf)
+                    ln, rn = renderer.project_x(sxn + off_n, tzn)
+                    pygame.draw.polygon(
+                        left, LANE_LINE_COLOR,
+                        [(lf - hw_f, syf), (lf + hw_f, syf), (ln + hw_n, syn), (ln - hw_n, syn)],
+                    )
+                    pygame.draw.polygon(
+                        right, LANE_LINE_COLOR,
+                        [(rf - hw_f, syf), (rf + hw_f, syf), (rn + hw_n, syn), (rn - hw_n, syn)],
+                    )
 
     def _draw_decor_object(self, world_z: float, side: float, scale: float) -> None:
         seg = self._segment_at(world_z)
