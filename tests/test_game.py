@@ -232,6 +232,64 @@ def test_game_with_a_music_player_starts_it_looping_on_construction():
     pygame.quit()
 
 
+def test_game_creates_working_engine_and_tire_screech_sfx():
+    g = _make_game()
+    assert g.engine_sound.available is True
+    assert g.tire_screech.available is True
+    pygame.quit()
+
+
+def test_engine_pitch_tracks_speed_over_a_full_race():
+    # Not a precise audio assertion (SDL's dummy driver can't be
+    # "listened to"), but a behavioral one: as the player accelerates from
+    # a stop, the engine's pitch bucket should climb, and driving through
+    # curves at speed should trigger tire screech at least once somewhere
+    # on the course.
+    g = _make_game()
+    keys = _keys(UP=True)
+    buckets = []
+    screeched = False
+    for _ in range(6000):
+        g.update(1 / 60, keys)
+        buckets.append(g.engine_sound._bucket)
+        if pygame.mixer.Channel(g.tire_screech.CHANNEL).get_busy():
+            screeched = True
+        if g.finished or g.time_up:
+            break
+    assert g.finished or g.time_up  # sanity: the race actually completed
+    assert buckets[-1] > buckets[0]
+    assert screeched is True
+    pygame.quit()
+
+
+def test_sfx_stop_when_the_race_finishes():
+    g = _make_game()
+    g.player.z = g.track_length - 0.01
+    g.player.speed = game.MAX_SPEED
+    g.engine_sound.update(1.0, active=True)
+    assert g.engine_sound._started is True
+    g.update(1 / 60, _keys(UP=True))  # this frame crosses the finish line
+    assert g.finished is True
+    # SFX only stops once update() observes racing=False at the *top* of
+    # the frame -- one frame after finished actually flips, not within the
+    # same call that flips it (see Game.update()'s racing/else split).
+    g.update(1 / 60, _keys(UP=True))
+    assert g.engine_sound._started is False
+    pygame.quit()
+
+
+def test_restart_resumes_engine_sound():
+    g = _make_game()
+    g.player.z = g.track_length
+    g.finished = True
+    g.update(1 / 60, _keys())  # engine stops while finished
+    assert g.engine_sound._started is False
+    g._restart()
+    g.update(1 / 60, _keys(UP=True))
+    assert g.engine_sound._started is True
+    pygame.quit()
+
+
 def test_game_run_selects_music_before_racing(monkeypatch):
     # game.run() (the module-level entry point main.py --race calls) must
     # show the select screen first and hand the confirmed track into Game

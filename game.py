@@ -34,6 +34,7 @@ from road import (
     world_x_at,
 )
 from music import MusicPlayer, MusicSelectScreen
+from sfx import EngineSound, TireScreech
 from stereo_renderer import StereoRenderer
 
 BLACK = (0, 0, 0)
@@ -244,6 +245,12 @@ class Game:
         self._road_base_idx = 0
         self._road_clip_before_n: list[float] = []  # crest occlusion, see _draw_road
 
+        # Synthesized, not file-based -- see sfx.py. Always created (no
+        # music-select-style "choice" for SFX); both degrade to silent
+        # no-ops on their own if numpy/pygame.mixer aren't usable.
+        self.engine_sound = EngineSound()
+        self.tire_screech = TireScreech()
+
     def _make_display(self) -> pygame.Surface:
         return _make_display(self.cfg)
 
@@ -397,6 +404,14 @@ class Game:
                     self.player.speed *= COLLISION_PENALTY
                     self.collision_cooldown = COLLISION_COOLDOWN
 
+            # Recomputed from this frame's final speed (post-collision, if
+            # any) so a hit's speed drop is audible immediately rather than
+            # one frame late. Tire screech reuses the centrifugal-drift
+            # proxy already computed above -- see sfx.py's own comment for
+            # why that stands in for lateral tire force here.
+            self.engine_sound.update(self.player.speed / MAX_SPEED, active=True)
+            self.tire_screech.update(abs(self.current_curve) * speed_frac, active=True)
+
             self.time_left -= dt
             if self.player.z >= self.track_length:
                 self.player.z = self.track_length
@@ -404,6 +419,9 @@ class Game:
             elif self.time_left <= 0.0:
                 self.time_left = 0.0
                 self.time_up = True
+        else:
+            self.engine_sound.update(0.0, active=False)
+            self.tire_screech.update(0.0, active=False)
 
         self.last_frame_ms = pygame.time.get_ticks() - start
 

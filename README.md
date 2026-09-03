@@ -421,6 +421,44 @@ extra friction. Touching a traffic car cuts your speed and starts a
 1-second collision cooldown so a single graze can't repeatedly stack
 penalties every frame.
 
+### Sound effects: synthesized engine drone + tire screech
+
+Unlike the BGM (user-supplied original tracks), the engine and tire-
+screech sound effects are generated entirely in code (`sfx.py`, using
+numpy + `pygame.sndarray`) -- no audio files, consistent with this
+project's "everything is generated, no external art/assets required"
+approach for its visuals. Asked which approach to use, since these SFX
+need continuous pitch/intensity changes tied to gameplay (not a fixed
+recording), the answer was code synthesis over file-based SFX.
+
+- **Engine**: an additively-synthesized drone (5 harmonics) pre-rendered
+  into `ENGINE_BUCKET_COUNT` (16) discrete pitch buckets from
+  `ENGINE_MIN_FREQ` (idle) to `ENGINE_MAX_FREQ` (redline) -- pygame can't
+  retune a looping `Sound` in real time, so `EngineSound` picks the
+  nearest bucket for the current `speed_frac` each frame and, when the
+  bucket changes, crossfades between two alternating mixer channels
+  (`ENGINE_CROSSFADE_MS`) rather than hard-cutting. Each bucket's loop
+  buffer is snapped to hold an exact whole number of wave cycles so it
+  loops with no seam/click. Recomputed right after collision handling in
+  `Game.update()`, so a hit's speed drop is audible the same frame, not
+  one frame late.
+- **Tire screech**: reuses `abs(current_curve) * speed_frac` -- the same
+  centrifugal-drift proxy `Game.update()` already computes every frame --
+  as a stand-in for lateral tire force (there's no real slip/grip model).
+  Above `TIRE_SCREECH_THRESHOLD`, a short noise-based screech clip (high-
+  passed noise mixed with a couple of vibrato'd resonant tones) plays on
+  its own channel, retriggering back-to-back for as long as the threshold
+  holds -- so a multi-second bend gets continuous screech, not one clip
+  cut short -- and fades out (`TIRE_SCREECH_FADE_MS`) once cornering
+  force drops back down. Gentle bends stay under threshold on purpose;
+  only the sharper ones (medium sweeps and up) trigger it.
+
+Both `EngineSound` and `TireScreech` degrade to complete, silent no-ops
+if numpy or `pygame.mixer` aren't usable (matching `MusicPlayer`'s
+tolerance for a missing BGM file) -- sound effects are polish, never a
+crash risk. Both fade out automatically once the race ends (finish or
+time-up) and resume on `R` (restart).
+
 ### How the road gets its stereo effect
 
 Every sprite (trees, traffic cars, the player's own car, HUD) goes
@@ -616,11 +654,13 @@ music.py                 pre-race "SELECT MUSIC" screen + MusicPlayer
                         preview/loop playback, safe load-error handling)
 bgm/                     the three BGM tracks music.py loads (mp3,
                         committed -- original, user-supplied audio)
+sfx.py                   synthesized engine drone + tire screech sound
+                        effects (numpy + pygame.sndarray; no audio files)
 config.py                Config/Rect dataclasses, JSON load/save, clamping
 config.json               real-hardware-verified calibration + disparity
                         safety settings (committed)
 config.example.json       original placeholder defaults (committed)
-requirements.txt          runtime dependency (pygame)
+requirements.txt          runtime dependencies (pygame, numpy)
 requirements-dev.txt       + pytest, for running tests/
 tests/                    automated tests (headless, SDL dummy driver)
 assets/                   placeholder for future art (empty for now)
@@ -646,9 +686,16 @@ racing game's rules (accelerate/coast/off-road speed caps, collision
 penalty + cooldown, finish/time-up transitions, restart, every key
 binding), hill-specific behavior (camera elevation eases rather than
 snaps, player-car bob stays within its cap, an object behind a hill crest
-is hidden until the camera crests it), and the music-select screen (track
+is hidden until the camera crests it), the music-select screen (track
 order, next/prev wraparound in both directions -- via MusicPlayer directly
 and via the real scripted-keypress event loop -- confirm/quit, a missing
 BGM file not raising and producing a short, viewport-width-safe error
 message, and, when the `bgm/` assets are present, that all three real
-tracks actually load and play).
+tracks actually load and play), and the synthesized sound effects
+(engine loop buffers hold an exact whole number of cycles so they loop
+click-free, engine pitch bucket climbs monotonically with speed and
+crossfades between alternating channels, tire screech triggers above its
+threshold and not below, doesn't retrigger while already playing, and
+fades out on both a threshold drop and an explicit stop, both SFX degrade
+to silent no-ops if numpy or the mixer are unavailable, and both actually
+stop on race-finish and resume on restart in a full Game integration).

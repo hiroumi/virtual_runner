@@ -1,1 +1,2 @@
 pygame>=2.5,<3
+numpy>=1.24  # waveform synthesis for engine/tire sound effects (sfx.py) via pygame.sndarray
