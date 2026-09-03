@@ -11,6 +11,7 @@ import pygame
 
 import game
 from config import default_config
+from road import HILL_START, SEGMENT_LENGTH, elevation_at
 
 
 class FakeKeys(dict):
@@ -129,6 +130,77 @@ def test_restart_resets_state():
     assert g.player.z == 0.0
     assert g.finished is False
     assert g.score == 0.0
+    pygame.quit()
+
+
+def test_hill_and_valley_render_without_crashing():
+    # Smoke test across every part of the new elevation feature: flat,
+    # rising, cresting, falling, and the valley dip.
+    g = _make_game()
+    for idx in (HILL_START - 50, HILL_START + 40, HILL_START + 100, HILL_START + 200, HILL_START + 650):
+        g.player.z = idx * SEGMENT_LENGTH
+        g.update(1 / 60, _keys())
+        g._draw()
+    pygame.quit()
+
+
+def test_camera_elevation_eases_toward_player_segment_not_instant():
+    g = _make_game()
+    g.player.z = HILL_START * SEGMENT_LENGTH  # elevation about to start rising
+    target = elevation_at(g.segments, (HILL_START + 60) * SEGMENT_LENGTH)
+    assert target > 1.0  # sanity: this point is actually partway up the hill
+    g.player.speed = 60.0
+    g.update(1 / 60, _keys(UP=True))
+    # One 1/60s tick should not have snapped cam_elevation anywhere near a
+    # target this far ahead -- it must still be easing.
+    assert abs(g.cam_elevation) < target
+    pygame.quit()
+
+
+def test_camera_elevation_converges_after_many_ticks():
+    g = _make_game()
+    g.player.speed = 0.0  # hold the player still so cam_elevation has a fixed target to chase
+    g.player.z = (HILL_START + 60) * SEGMENT_LENGTH
+    target = elevation_at(g.segments, g.player.z)
+    for _ in range(300):
+        g.update(1 / 60, _keys())
+    assert abs(g.cam_elevation - target) < 0.05
+    pygame.quit()
+
+
+def test_player_bob_stays_within_its_configured_cap():
+    g = _make_game()
+    g.player.speed = game.MAX_SPEED
+    for idx in range(HILL_START - 10, HILL_START + 260, 5):
+        g.player.z = idx * SEGMENT_LENGTH
+        g.update(1 / 60, _keys())
+        assert abs(g.player_bob) <= game.PLAYER_BOB_MAX_PX + 1e-6
+    pygame.quit()
+
+
+def test_object_behind_hill_crest_is_hidden_until_crested():
+    # Regression test for the "頂上での遮蔽" requirement: an object placed
+    # just beyond the crest, on the far/down slope, must be hidden from a
+    # camera partway up the near slope, and become visible again once the
+    # camera has crested the hill -- see game.Game._sprite_visible.
+    g = _make_game()
+    width, height = g.renderer.left_surface.get_size()
+    far_idx = HILL_START + 130  # inside the fall section, just past the crest
+    far_z = far_idx * SEGMENT_LENGTH
+
+    def visible_for(player_idx: int) -> bool:
+        g.player.z = player_idx * SEGMENT_LENGTH
+        g.cam_elevation = elevation_at(g.segments, g.player.z)
+        g._draw_road()
+        cam_x = g._road_center_x()
+        world_y = elevation_at(g.segments, far_z)
+        _, sy, _, _ = game.project(
+            0.0, world_y, far_z, cam_x, g.cam_elevation, g.player.z, width, height
+        )
+        return g._sprite_visible(far_z, sy)
+
+    assert visible_for(HILL_START + 40) is False   # partway up the near slope: hidden
+    assert visible_for(HILL_START + 160) is True   # past the crest: visible again
     pygame.quit()
 
 

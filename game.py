@@ -23,7 +23,16 @@ import random
 import pygame
 
 from config import load_config, save_config
-from road import DRAW_DISTANCE, ROAD_WIDTH, SEGMENT_LENGTH, build_track, curve_at, track_length, world_x_at
+from road import (
+    DRAW_DISTANCE,
+    ROAD_WIDTH,
+    SEGMENT_LENGTH,
+    build_track,
+    curve_at,
+    elevation_at,
+    track_length,
+    world_x_at,
+)
 from stereo_renderer import StereoRenderer
 
 BLACK = (0, 0, 0)
@@ -81,6 +90,26 @@ BG_SHIFT_SCALE = 110.0    # px of background pan at full curve + full speed
 BG_SHIFT_SMOOTHING = 6.0  # higher = pan reacts to curve changes faster
 CAR_LEAN_SCALE = 11.0     # px the player car sprite nudges toward the turn
 
+# -- Road elevation (hills) -------------------------------------------------
+# Vertical companion to CAMERA_HEIGHT/project() below: each segment now
+# additionally carries an elevation (world_y, see road.py), and every
+# drawn thing (road, traffic, decor, camera) is projected through the same
+# formula, so a hill is real geometry, not a screen-space pan. All of these
+# are separate from config.json's calibration values on purpose -- they're
+# gameplay/visual tuning, not display calibration -- see project().
+ELEVATION_Y_SCALE = 2.4        # px-on-screen per world_y unit of camera/road
+                                # height difference -- "起伏による画面Y方向の倍率"
+CAMERA_ELEVATION_SMOOTHING = 6.0  # how fast cam_elevation chases the
+                                   # player's actual road elevation (1/s)
+PLAYER_BOB_LOOKAHEAD = 6.0      # world units ahead sampled to sense local
+                                 # grade for the player-car nudge
+PLAYER_BOB_STRENGTH = 90.0      # px of player-car vertical nudge per unit
+                                 # of local grade (dy/dz) -- bob "strength"
+PLAYER_BOB_MAX_PX = 10.0        # hard cap so cresting/valleys never make
+                                 # the player car visibly jump
+PLAYER_BOB_SMOOTHING = 5.0      # how fast the player-car nudge chases its
+                                 # target grade (1/s)
+
 LANE_COUNT = 3  # American-style multi-lane road
 # Fractional offsets (of ROAD_WIDTH) of the dashed lines between lanes,
 # e.g. [-1/3, 1/3] for 3 lanes. Traffic lane centers use the same spacing
@@ -101,7 +130,23 @@ def _font(size: int) -> pygame.font.Font:
     return pygame.font.SysFont("consolas,couriernew,monospace", size)
 
 
-def project(world_x: float, world_z: float, cam_x: float, cam_z: float, width: float, height: float):
+def project(
+    world_x: float,
+    world_y: float,
+    world_z: float,
+    cam_x: float,
+    cam_y: float,
+    cam_z: float,
+    width: float,
+    height: float,
+):
+    """world_y/cam_y are elevation (road.py's Segment.elevation / the
+    camera's smoothed road-height reference, Game.cam_elevation) -- both
+    default to 0 on flat ground, which reduces the sy formula below to
+    exactly what it was before hills existed. Only sy depends on them;
+    left/right eyes always share this same sy (see stereo_renderer.py --
+    vertical parallax is never a thing), only the horizontal x differs per
+    eye via StereoRenderer.project_x downstream."""
     # Floor of one segment length, not near-zero: right at the camera the
     # scale would otherwise blow up to an extreme value, which is
     # invisible for the wide grass/road quads (they just fill the bottom
@@ -110,7 +155,7 @@ def project(world_x: float, world_z: float, cam_x: float, cam_z: float, width: f
     trans_z = max(world_z - cam_z, SEGMENT_LENGTH)
     scale = CAMERA_DEPTH / trans_z
     sx = width / 2 + scale * (world_x - cam_x) * width / 2
-    sy = height / 2 + scale * CAMERA_HEIGHT * height / 2
+    sy = height / 2 + scale * (CAMERA_HEIGHT + (cam_y - world_y) * ELEVATION_Y_SCALE) * height / 2
     sw = scale * ROAD_WIDTH * width / 2
     return sx, sy, sw, trans_z
 
@@ -172,6 +217,10 @@ class Game:
         self.last_frame_ms = 0.0
         self.bg_offset = 0.0  # smoothed background-parallax pan, see update()
         self.current_curve = 0.0
+        self.cam_elevation = 0.0  # smoothed camera road-height reference
+        self.player_bob = 0.0     # smoothed player-car vertical nudge (px)
+        self._road_base_idx = 0
+        self._road_clip_before_n: list[float] = []  # crest occlusion, see _draw_road
 
     def _make_display(self) -> pygame.Surface:
         flags = pygame.FULLSCREEN if self.cfg.fullscreen else 0
@@ -253,6 +302,8 @@ class Game:
         self.time_up = False
         self.collision_cooldown = 0.0
         self.traffic = self._build_traffic()
+        self.cam_elevation = 0.0
+        self.player_bob = 0.0
 
     # -- simulation (runs once, regardless of how many eyes we draw) ----
     def update(self, dt: float, keys) -> None:
@@ -296,6 +347,21 @@ class Game:
             # straightens out again -- see the BG_SHIFT_* comment above.
             target_bg_shift = -self.current_curve * speed_frac * BG_SHIFT_SCALE
             self.bg_offset += (target_bg_shift - self.bg_offset) * min(1.0, BG_SHIFT_SMOOTHING * dt)
+
+            # Camera's road-height reference eases toward the player's
+            # actual segment elevation rather than snapping to it -- see
+            # PLAYER_BOB_* below for the (separate, more heavily damped)
+            # player-car sprite nudge that rides on top of this.
+            target_cam_elevation = elevation_at(self.segments, self.player.z)
+            self.cam_elevation += (
+                (target_cam_elevation - self.cam_elevation) * min(1.0, CAMERA_ELEVATION_SMOOTHING * dt)
+            )
+            grade = (
+                elevation_at(self.segments, self.player.z + PLAYER_BOB_LOOKAHEAD)
+                - elevation_at(self.segments, self.player.z)
+            ) / PLAYER_BOB_LOOKAHEAD
+            target_bob = max(-PLAYER_BOB_MAX_PX, min(PLAYER_BOB_MAX_PX, -grade * PLAYER_BOB_STRENGTH))
+            self.player_bob += (target_bob - self.player_bob) * min(1.0, PLAYER_BOB_SMOOTHING * dt)
 
             self.player.z += self.player.speed * dt
             self.score += self.player.speed * dt * SCORE_PER_SECOND_PER_SPEED
@@ -373,9 +439,11 @@ class Game:
         left, right = renderer.left_surface, renderer.right_surface
         width, height = left.get_size()
         cam_x = self._road_center_x()
+        cam_y = self.cam_elevation
         cam_z = self.player.z
 
         base_idx = int(self.player.z / SEGMENT_LENGTH)
+        self._road_base_idx = base_idx
         max_idx = len(self.segments) - 1
 
         # world_z always advances with n, even past the last real segment
@@ -383,29 +451,58 @@ class Game:
         # end would collapse onto the same segment at distance ~0 and the
         # road would degenerate into one overlapping blob instead of
         # continuing to recede into the distance.
+        #
+        # Points are built NEAREST-first (n=0..DRAW_DISTANCE) so the
+        # render loop below can walk near-to-far and apply the classic
+        # "crest watermark" hill-occlusion trick: on flat/curved ground
+        # (elevation 0) sy is strictly decreasing as n increases, so the
+        # watermark check below never fires and this is equivalent to the
+        # old far-to-near painter's-algorithm order; it only starts hiding
+        # segments once a hill crest makes a farther segment's projected y
+        # fail to clear the nearer crest's, which is exactly the "hidden
+        # behind the hill" case. See docs/PHASE2_RACE_LOG.md.
         points = []
-        for n in range(DRAW_DISTANCE, -1, -1):
+        for n in range(0, DRAW_DISTANCE + 1):
             idx = base_idx + n
             look_idx = min(idx, max_idx)
             seg = self.segments[look_idx]
             world_z = idx * SEGMENT_LENGTH
-            sx, sy, sw, tz = project(seg.world_x, world_z, cam_x, cam_z, width, height)
+            sx, sy, sw, tz = project(seg.world_x, seg.elevation, world_z, cam_x, cam_y, cam_z, width, height)
             points.append((look_idx, sx, sy, sw, tz))
 
+        crest_y = float(height)
+        clip_before_n = [crest_y] * DRAW_DISTANCE
         for i in range(len(points) - 1):
-            idx_f, sxf, syf, swf, tzf = points[i]
-            idx_n, sxn, syn, swn, tzn = points[i + 1]
-            dark = self.segments[idx_n].looks_dark
+            idx_near, sx_near, sy_near, sw_near, tz_near = points[i]
+            idx_far, sx_far, sy_far, sw_far, tz_far = points[i + 1]
+            clip_before_n[i] = crest_y
+
+            if sy_far >= sy_near or sy_far >= crest_y:
+                # Far edge doesn't rise above the near edge (perspective
+                # has inverted on the far side of a crest), or doesn't
+                # clear the watermark a nearer crest already established
+                # -- either way this segment is hidden behind a hill.
+                continue
+
+            dark = self.segments[idx_near].looks_dark
             grass = GRASS_DARK if dark else GRASS_LIGHT
             rumble = RUMBLE_DARK if dark else RUMBLE_LIGHT
             road = ROAD_DARK if dark else ROAD_LIGHT
 
             for color, mult in ((grass, 3.0), (rumble, 1.15), (road, 1.0)):
-                lf, rf = renderer.project_x(sxf, tzf)
-                ln, rn = renderer.project_x(sxn, tzn)
-                wf, wn = swf * mult, swn * mult
-                pygame.draw.polygon(left, color, [(lf - wf, syf), (lf + wf, syf), (ln + wn, syn), (ln - wn, syn)])
-                pygame.draw.polygon(right, color, [(rf - wf, syf), (rf + wf, syf), (rn + wn, syn), (rn - wn, syn)])
+                l_near, r_near = renderer.project_x(sx_near, tz_near)
+                l_far, r_far = renderer.project_x(sx_far, tz_far)
+                w_near, w_far = sw_near * mult, sw_far * mult
+                pygame.draw.polygon(
+                    left, color,
+                    [(l_near - w_near, sy_near), (l_near + w_near, sy_near),
+                     (l_far + w_far, sy_far), (l_far - w_far, sy_far)],
+                )
+                pygame.draw.polygon(
+                    right, color,
+                    [(r_near - w_near, sy_near), (r_near + w_near, sy_near),
+                     (r_far + w_far, sy_far), (r_far - w_far, sy_far)],
+                )
 
             if dark:
                 # American-style dashed lane dividers: only drawn on the
@@ -413,27 +510,49 @@ class Game:
                 # free using the same alternation as the rumble strips.
                 line_hw_frac = LANE_LINE_HALF_WIDTH / ROAD_WIDTH
                 for frac in LANE_DIVIDER_FRACS:
-                    off_f, off_n = swf * frac, swn * frac
-                    hw_f, hw_n = swf * line_hw_frac, swn * line_hw_frac
-                    lf, rf = renderer.project_x(sxf + off_f, tzf)
-                    ln, rn = renderer.project_x(sxn + off_n, tzn)
+                    off_near, off_far = sw_near * frac, sw_far * frac
+                    hw_near, hw_far = sw_near * line_hw_frac, sw_far * line_hw_frac
+                    l_near, r_near = renderer.project_x(sx_near + off_near, tz_near)
+                    l_far, r_far = renderer.project_x(sx_far + off_far, tz_far)
                     pygame.draw.polygon(
                         left, LANE_LINE_COLOR,
-                        [(lf - hw_f, syf), (lf + hw_f, syf), (ln + hw_n, syn), (ln - hw_n, syn)],
+                        [(l_near - hw_near, sy_near), (l_near + hw_near, sy_near),
+                         (l_far + hw_far, sy_far), (l_far - hw_far, sy_far)],
                     )
                     pygame.draw.polygon(
                         right, LANE_LINE_COLOR,
-                        [(rf - hw_f, syf), (rf + hw_f, syf), (rn + hw_n, syn), (rn - hw_n, syn)],
+                        [(r_near - hw_near, sy_near), (r_near + hw_near, sy_near),
+                         (r_far + hw_far, sy_far), (r_far - hw_far, sy_far)],
                     )
+
+            crest_y = sy_near
+
+        self._road_clip_before_n = clip_before_n
+
+    def _sprite_visible(self, world_z: float, sy: float) -> bool:
+        """A sprite (traffic car / roadside decor) is hidden once a nearer
+        hill crest's road-edge watermark has been reached -- reuses the
+        same clip values _draw_road built for the road polygons
+        themselves, so a car/tree behind a hill stays hidden until the
+        camera crests it instead of being drawn independent of the
+        terrain that's currently blocking it."""
+        n = int(world_z / SEGMENT_LENGTH) - self._road_base_idx
+        if 0 <= n < len(self._road_clip_before_n):
+            return sy < self._road_clip_before_n[n]
+        return True
 
     def _draw_decor_object(self, world_z: float, side: float, scale: float) -> None:
         seg = self._segment_at(world_z)
         cam_x = self._road_center_x()
+        cam_y = self.cam_elevation
         cam_z = self.player.z
         width, height = self.renderer.left_surface.get_size()
         world_x = seg.world_x + side * ROAD_WIDTH * 1.4
-        sx, sy, sw, tz = project(world_x, world_z, cam_x, cam_z, width, height)
+        world_y = elevation_at(self.segments, world_z)
+        sx, sy, sw, tz = project(world_x, world_y, world_z, cam_x, cam_y, cam_z, width, height)
         if tz > SEGMENT_LENGTH * (DRAW_DISTANCE + 1) or world_z < cam_z:
+            return
+        if not self._sprite_visible(world_z, sy):
             return
 
         def draw(surf: pygame.Surface, ox: float) -> None:
@@ -445,13 +564,20 @@ class Game:
         # Interpolated like the camera reference (world_x_at) since a
         # traffic car's z keeps advancing frame to frame, unlike static
         # roadside decor -- otherwise it would visibly hop sideways once
-        # per segment while cornering, same as the camera did.
+        # per segment while cornering, same as the camera did. Elevation
+        # is sampled the same way (elevation_at), so a car sits exactly on
+        # the road surface of whatever segment it currently occupies
+        # instead of floating/sinking as the road climbs or falls under it.
         cam_x = self._road_center_x()
+        cam_y = self.cam_elevation
         cam_z = self.player.z
         width, height = self.renderer.left_surface.get_size()
         world_x = world_x_at(self.segments, car.z) + car.x * ROAD_WIDTH
-        sx, sy, sw, tz = project(world_x, car.z, cam_x, cam_z, width, height)
+        world_y = elevation_at(self.segments, car.z)
+        sx, sy, sw, tz = project(world_x, world_y, car.z, cam_x, cam_y, cam_z, width, height)
         if tz > SEGMENT_LENGTH * (DRAW_DISTANCE + 1) or car.z < cam_z:
+            return
+        if not self._sprite_visible(car.z, sy):
             return
 
         def draw(surf: pygame.Surface, ox: float) -> None:
@@ -468,7 +594,12 @@ class Game:
         # "still going straight while the road bends."
         lean = self.current_curve * speed_frac * CAR_LEAN_SCALE
         cx = w / 2 + self.player.x * 10 + lean + ox
-        draw_car(surf, cx, h - 34, 1.0, PLAYER_COLOR)
+        # player_bob is a small, smoothed, clamped nudge from the local
+        # road grade (see update()) -- the car's base position stays
+        # pinned near the bottom of the screen, it doesn't move by the
+        # same amount as the road itself.
+        cy = h - 34 + self.player_bob
+        draw_car(surf, cx, cy, 1.0, PLAYER_COLOR)
 
     def _draw_hud(self, surf: pygame.Surface, ox: float) -> None:
         w, h = surf.get_size()

@@ -21,6 +21,14 @@ ROAD_WIDTH = 11.0     # half-width of the drivable road, world units (3 lanes)
 RUMBLE_LENGTH = 3     # segments per alternating rumble-strip color band
 DRAW_DISTANCE = 100   # segments rendered ahead of the camera
 
+# Steepest allowed |delta elevation| per world-unit of z, checked by
+# tests/test_road.py against every authored hill. A safety/design ceiling
+# (not a physics limit) that keeps hills readable through the DRAW_DISTANCE
+# window instead of a wall; see ELEVATION_CHECKPOINTS below for the actual
+# authored values, which stay well under this on purpose so there's room to
+# steepen them later the same way MAX_SPEED was tuned up over time.
+MAX_GRADE = 0.09
+
 
 @dataclass
 class Segment:
@@ -28,6 +36,7 @@ class Segment:
     curve: float = 0.0
     world_x: float = 0.0      # accumulated lateral center offset
     world_z: float = 0.0      # distance along the track from the start
+    elevation: float = 0.0    # world_y of the road surface at this segment
     looks_dark: bool = False  # alternating road/rumble/grass color band
     cars: list = field(default_factory=list)   # indices into Game.traffic
     decor: list = field(default_factory=list)  # (side, kind) roadside decor
@@ -96,7 +105,92 @@ TRACK_EVENTS: list[tuple[str, float, int]] = [
 ]
 
 
-def build_track(events: list[tuple[str, float, int]] = TRACK_EVENTS) -> list[Segment]:
+# -- Elevation (hills) ------------------------------------------------------
+# Vertical companion to the curve/world_x system above, but built
+# differently on purpose: curve is integrated segment-by-segment (so bends
+# self-cancel, see _add_bend), while elevation is authored as a short list
+# of (segment_index, elevation) checkpoints and *smoothstep*-interpolated
+# between them by apply_elevation(). That gives each hill an explicit start
+# and end index (easy to place relative to TRACK_EVENTS, e.g. "overlap the
+# tail of this bend") and a guaranteed ease-in/ease-out at both ends -- no
+# risk of an integration error compounding over a long course the way a
+# hand-tuned per-segment slope could.
+HILL_HEIGHT = 14.0     # world units the first hill rises -- "strength" knob
+VALLEY_DEPTH = 8.0     # world units the second feature (a dip) descends
+HILL_RISE_SEGMENTS = 90     # segments used for each smooth transition --
+HILL_CREST_SEGMENTS = 30    # "how many segments the height change spans"
+HILL_FALL_SEGMENTS = 150    # (longer than the rise: "a bit long a descent")
+VALLEY_DOWN_SEGMENTS = 50
+VALLEY_HOLD_SEGMENTS = 15
+VALLEY_UP_SEGMENTS = 50
+
+# Placed mid-course on purpose (not a full-track redesign): HILL_START sits
+# in the straight right after the "lazy, wide S-curve" bend and its descent
+# deliberately runs on into the start of the following "medium right sweep"
+# bend (TRACK_EVENTS index ~1210-1400, peak 0.14) -- a curve+grade section,
+# but a gentle/medium one, not stacked with the sharp chicane. VALLEY_START
+# sits in the straight before the chicane, clear of any curve, with a 5+
+# segment flat buffer before the chicane begins at index 1830. See
+# docs/PHASE2_RACE_LOG.md for the full placement reasoning.
+HILL_START = 1095
+VALLEY_START = 1710
+
+
+def _smoothstep(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _hill_checkpoints() -> list[tuple[int, float]]:
+    h0 = HILL_START
+    h1 = h0 + HILL_RISE_SEGMENTS
+    h2 = h1 + HILL_CREST_SEGMENTS
+    h3 = h2 + HILL_FALL_SEGMENTS
+    v0 = VALLEY_START
+    v1 = v0 + VALLEY_DOWN_SEGMENTS
+    v2 = v1 + VALLEY_HOLD_SEGMENTS
+    v3 = v2 + VALLEY_UP_SEGMENTS
+    return [
+        (h0, 0.0), (h1, HILL_HEIGHT), (h2, HILL_HEIGHT), (h3, 0.0),
+        (v0, 0.0), (v1, -VALLEY_DEPTH), (v2, -VALLEY_DEPTH), (v3, 0.0),
+    ]
+
+
+ELEVATION_CHECKPOINTS: list[tuple[int, float]] = _hill_checkpoints()
+
+
+def apply_elevation(
+    segments: list[Segment],
+    checkpoints: list[tuple[int, float]] = ELEVATION_CHECKPOINTS,
+) -> None:
+    """Sets seg.elevation for every segment by smoothstep-interpolating
+    between consecutive (segment_index, elevation) checkpoints -- the
+    ease-in/ease-out this gives at every checkpoint is what keeps a hill
+    from ever reading as a kink. Segments before the first checkpoint or
+    after the last hold flat at that checkpoint's value (the course starts
+    and ends flat, since ELEVATION_CHECKPOINTS' first/last values are 0)."""
+    if not checkpoints:
+        return
+    checkpoints = sorted(checkpoints, key=lambda c: c[0])
+    for seg in segments:
+        i = seg.index
+        if i <= checkpoints[0][0]:
+            seg.elevation = checkpoints[0][1]
+            continue
+        if i >= checkpoints[-1][0]:
+            seg.elevation = checkpoints[-1][1]
+            continue
+        for (i0, h0), (i1, h1) in zip(checkpoints, checkpoints[1:]):
+            if i0 <= i <= i1:
+                t = 0.0 if i1 == i0 else (i - i0) / (i1 - i0)
+                seg.elevation = h0 + (h1 - h0) * _smoothstep(t)
+                break
+
+
+def build_track(
+    events: list[tuple[str, float, int]] = TRACK_EVENTS,
+    elevation_checkpoints: list[tuple[int, float]] = ELEVATION_CHECKPOINTS,
+) -> list[Segment]:
     segments: list[Segment] = []
     for kind, peak, length in events:
         if kind == "straight":
@@ -114,6 +208,8 @@ def build_track(events: list[tuple[str, float, int]] = TRACK_EVENTS) -> list[Seg
         seg.world_x = world_x
         seg.world_z = i * SEGMENT_LENGTH
         seg.looks_dark = (i // RUMBLE_LENGTH) % 2 == 0
+
+    apply_elevation(segments, elevation_checkpoints)
 
     return segments
 
@@ -153,6 +249,14 @@ def curve_at(segments: list[Segment], world_z: float) -> float:
     lean) instead of having them step once per segment."""
     i0, i1, frac = _interp_index_frac(segments, world_z)
     return segments[i0].curve * (1 - frac) + segments[i1].curve * frac
+
+
+def elevation_at(segments: list[Segment], world_z: float) -> float:
+    """Same interpolation as world_x_at/curve_at, for elevation -- lets the
+    camera-height reference and any object's projected height be sampled
+    continuously instead of stepping once per segment."""
+    i0, i1, frac = _interp_index_frac(segments, world_z)
+    return segments[i0].elevation * (1 - frac) + segments[i1].elevation * frac
 
 
 def track_length(segments: list[Segment]) -> float:

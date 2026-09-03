@@ -27,8 +27,10 @@ placeholders (rectangles, lines, circles) until real original art exists.
 - **Phase 2, the racing game: implemented.** `game.py` is a rear-view,
   segment-based pseudo-3D racer (scrolling curved road, accelerate/brake/
   steer, traffic cars, collision, one ~60-90s course, TIME/SCORE/SPEED
-  HUD) rendered through the same `StereoRenderer`. Log:
-  `docs/PHASE2_RACE_LOG.md` (Japanese).
+  HUD) rendered through the same `StereoRenderer`. Now also has road
+  elevation -- a hill (rise/crest/fall) and a valley mid-course, with
+  crest occlusion for traffic/decor behind a hill -- see "Road elevation"
+  below. Log: `docs/PHASE2_RACE_LOG.md` (Japanese).
 
 **Picking this back up after a break?** Start at
 `docs/NEXT_STEPS.md` (Japanese) — it's a handoff summary of exactly
@@ -429,6 +431,70 @@ Together they turn "the road is diagonal, the car isn't" into "we're
 banking into the curve" -- see `docs/PHASE2_RACE_LOG.md` for the request
 that prompted this and how it was verified.
 
+### Road elevation: hills, a crest, and a valley
+
+Added on top of the existing left/right curve system, not a replacement
+for it. Each `road.py` `Segment` now also carries an `elevation`
+(`world_y`, road-surface height); a short list of `(segment_index,
+elevation)` checkpoints in `road.py` is smoothstep-interpolated (via
+`apply_elevation()`) into every segment's height, so a hill's rise, crest,
+and fall -- or a valley's dip and recovery -- always ease in/out and can
+never kink. `MAX_GRADE` is a safety ceiling checked by
+`tests/test_road.py` against every authored hill.
+
+`game.py`'s `project()` grew a `world_y`/`cam_y` pair: the screen-Y formula
+became `height/2 + scale*(CAMERA_HEIGHT + (cam_y - world_y) *
+ELEVATION_Y_SCALE)*height/2`, which reduces to exactly the pre-hill
+formula when elevation is 0 everywhere. Road, traffic cars, and roadside
+decor all project through this same function with `elevation_at()`
+(interpolated the same way as `world_x_at`/`curve_at`), so a car or tree
+always sits exactly on the surface of whatever segment it currently
+occupies rather than floating or sinking. Left/right eyes always share the
+same `sy` -- only the horizontal `project_x` differs per eye, so hills
+never introduce vertical parallax.
+
+**Hiding what's over the hill.** `_draw_road()` used to paint far-to-near
+(simple painter's algorithm, fine when nothing overlaps on screen). Hills
+break that assumption, so it now draws near-to-far and tracks a "crest
+watermark" -- the classic technique from Jake Gordon's pseudo-3D racer
+tutorials: a segment is skipped once its far edge fails to clear either
+its own near edge or the watermark left by a nearer, already-drawn crest.
+On flat/curved ground this condition never fires (screen-Y is strictly
+monotonic there), so existing rendering is unaffected; it only starts
+hiding segments once a real crest exists. Traffic cars and decor reuse the
+same watermark array (`Game._sprite_visible`) so an enemy car beyond a
+hill crest stays hidden and reappears once the camera crests the hill,
+exactly like the road itself.
+
+**Camera and player car.** `Game.cam_elevation` (the camera's road-height
+reference) and `Game.player_bob` (a small, separately-damped vertical
+nudge for just the player-car sprite) both ease toward their targets
+exponentially rather than snapping -- no jump/suspension physics, just
+smoothing -- so cresting a hill or bottoming out in a valley never makes
+the view or the car visibly jump. The player car's base position stays
+pinned near the bottom of the screen; `player_bob` is a small offset on
+top of that, sized by local road grade and hard-capped by
+`PLAYER_BOB_MAX_PX`.
+
+**Tuning knobs**, all separate from `config.json`'s calibration values
+(viewport/eye_gap/swap/flip are never touched by this feature):
+`ELEVATION_Y_SCALE` (px per world_y unit on screen), `road.HILL_HEIGHT` /
+`VALLEY_DEPTH` (grade strength), `road.HILL_RISE_SEGMENTS` /
+`HILL_CREST_SEGMENTS` / `HILL_FALL_SEGMENTS` / `VALLEY_DOWN_SEGMENTS` /
+`VALLEY_HOLD_SEGMENTS` / `VALLEY_UP_SEGMENTS` (segments spent transitioning),
+`CAMERA_ELEVATION_SMOOTHING` (camera follow speed), and
+`PLAYER_BOB_LOOKAHEAD` / `PLAYER_BOB_STRENGTH` / `PLAYER_BOB_MAX_PX` /
+`PLAYER_BOB_SMOOTHING` (player-car nudge).
+
+Placed mid-course on purpose, not a full track redesign: the hill's
+descent deliberately overlaps the start of a medium curve (both gentle,
+never combined with the sharp end-of-course chicane), and the valley sits
+in a straight with a clear buffer before that chicane. See
+`docs/PHASE2_RACE_LOG.md` for the exact placement, tuning numbers, and
+verification (51/51 tests pass, headless full-course run confirmed no
+crashes; real-hardware confirmation of 60fps and the crest-occlusion feel
+through the accessory's lenses is still outstanding).
+
 ### Smooth cornering: interpolating between segments
 
 Segments are 3 world units long, and during a curve consecutive
@@ -501,6 +567,10 @@ load/save/round-trip, fallback-to-defaults on missing/corrupt/invalid
 the depth→disparity formula (zero at `screen_depth`, monotonic, safety
 caps never exceeded even at extreme inputs), every Phase 2 test-scene key
 binding, the track/curve model (reasonable length and lateral range, no
-runaway curve), and the racing game's rules (accelerate/coast/off-road
-speed caps, collision penalty + cooldown, finish/time-up transitions,
-restart, every key binding).
+runaway curve), the elevation model (smooth/eased transitions, grade never
+exceeds `MAX_GRADE`, hill/valley reach their authored extremes), the
+racing game's rules (accelerate/coast/off-road speed caps, collision
+penalty + cooldown, finish/time-up transitions, restart, every key
+binding), and hill-specific behavior (camera elevation eases rather than
+snaps, player-car bob stays within its cap, an object behind a hill crest
+is hidden until the camera crests it).
