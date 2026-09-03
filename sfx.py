@@ -35,7 +35,17 @@ ENGINE_MIN_FREQ = 70.0          # Hz, idle
 ENGINE_MAX_FREQ = 240.0         # Hz, redline
 ENGINE_LOOP_SECONDS = 0.22      # each bucket's pre-rendered loop length
 ENGINE_CROSSFADE_MS = 90        # fade between old/new bucket on a pitch change
-ENGINE_VOLUME = 0.32
+# 2026-09-04: real-hardware feedback was "barely audible." Measured why --
+# a handful of pure sine harmonics summed and normalized has RMS ~0.37 of
+# full digital scale (a plain sine alone would be ~0.71), nowhere near the
+# loudness of a mastered BGM track, so even before the (also too low)
+# ENGINE_VOLUME multiplier, the source signal itself was quiet. Fixed with
+# both a volume increase (0.32 -> 0.8) and _soft_clip: tanh-based
+# saturation pushes RMS up toward the 1.0 peak by driving mid-amplitude
+# samples closer to the clip ceiling (a standard "make it sound louder
+# without just raising the peak" trick) without hard-clipping/crackling.
+ENGINE_VOLUME = 0.8
+ENGINE_SATURATION_DRIVE = 2.5    # higher = louder/grittier, see _soft_clip
 ENGINE_HARMONICS = ((1, 1.0), (2, 0.5), (3, 0.3), (4, 0.15), (5, 0.08))
 ENGINE_WOBBLE_HZ = 7.0          # slow tremolo for a rougher, less pure-tone feel
 ENGINE_WOBBLE_DEPTH = 0.05
@@ -50,7 +60,10 @@ ENGINE_WOBBLE_DEPTH = 0.05
 TIRE_SCREECH_THRESHOLD = 0.15
 TIRE_SCREECH_SECONDS = 0.35
 TIRE_SCREECH_FADE_MS = 120
-TIRE_SCREECH_VOLUME = 0.45
+TIRE_SCREECH_VOLUME = 0.8       # raised from 0.45 -- see ENGINE_VOLUME's comment
+TIRE_SCREECH_SATURATION_DRIVE = 1.6  # gentler than the engine's -- too much
+                                      # saturation flattens the noise into
+                                      # featureless static instead of a screech
 
 
 def _mixer_format():
@@ -62,6 +75,14 @@ def _mixer_format():
     if sample_rate <= 0 or channels not in (1, 2):
         return None
     return sample_rate, channels
+
+
+def _soft_clip(x: "np.ndarray", drive: float) -> "np.ndarray":
+    """tanh saturation, rescaled so a full-scale input (peak exactly 1.0)
+    still peaks at exactly 1.0 after saturation -- raises RMS (perceived
+    loudness) by pulling mid-amplitude samples up toward the ceiling,
+    without pushing the peak past it or hard-clipping into crackle."""
+    return np.tanh(x * drive) / math.tanh(drive)
 
 
 def _to_sound(mono: "np.ndarray", channels: int) -> pygame.mixer.Sound:
@@ -84,9 +105,10 @@ def _engine_wave(target_freq: float, sample_rate: int) -> tuple["np.ndarray", fl
     for harmonic, amp in ENGINE_HARMONICS:
         wave += amp * np.sin(2 * math.pi * freq * harmonic * t)
     wave /= total_amp
+    wave = _soft_clip(wave, ENGINE_SATURATION_DRIVE)
     wobble = 1.0 + ENGINE_WOBBLE_DEPTH * np.sin(2 * math.pi * ENGINE_WOBBLE_HZ * t)
     wave *= wobble
-    return wave * 0.9, freq
+    return wave * 0.95, freq
 
 
 def _tire_screech_wave(sample_rate: int, rng: "np.random.Generator") -> "np.ndarray":
@@ -117,7 +139,8 @@ def _tire_screech_wave(sample_rate: int, rng: "np.random.Generator") -> "np.ndar
     peak = np.max(np.abs(mix))
     if peak > 1e-9:
         mix = mix / peak
-    return mix * 0.85
+    mix = _soft_clip(mix, TIRE_SCREECH_SATURATION_DRIVE)
+    return mix * 0.9
 
 
 class EngineSound:

@@ -34,7 +34,7 @@ from road import (
     world_x_at,
 )
 from music import MusicPlayer, MusicSelectScreen
-from sfx import EngineSound, TireScreech
+from sfx import ENGINE_BUCKET_COUNT, EngineSound, TireScreech
 from stereo_renderer import StereoRenderer
 
 BLACK = (0, 0, 0)
@@ -675,6 +675,10 @@ class Game:
             f"  zero={'ON' if renderer.zero_parallax else 'off'}(Z)  flip={'ON' if renderer.flip_debug else 'off'}(I)",
             f"caps=[{max_out:+.0f},{max_in:+.0f}]px  player.z={self.player.z:7.1f}/{self.track_length:.0f}"
             f"  player.x={self.player.x:+.2f}  speed={self.player.speed:5.1f}",
+            f"engine: {'on' if self.engine_sound.available else 'unavailable'}"
+            f" bucket={self.engine_sound._bucket}/{ENGINE_BUCKET_COUNT - 1}"
+            f"  tire_screech: {'on' if self.tire_screech.available else 'unavailable'}"
+            f" playing={pygame.mixer.Channel(self.tire_screech.CHANNEL).get_busy() if self.tire_screech.available else False}",
         ]
         y = 4
         for line in lines:

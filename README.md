@@ -459,6 +459,20 @@ tolerance for a missing BGM file) -- sound effects are polish, never a
 crash risk. Both fade out automatically once the race ends (finish or
 time-up) and resume on `R` (restart).
 
+**2026-09-04 feedback: "barely audible."** Measured why -- a handful of
+summed sine harmonics has RMS well below a single sine's, let alone a
+mastered BGM track, so the source waveforms themselves were quiet before
+volume even entered into it. Fixed with both a volume increase
+(`ENGINE_VOLUME`/`TIRE_SCREECH_VOLUME`: 0.32/0.45 -> 0.8/0.8) and
+`_soft_clip`, a tanh-based saturation stage (`ENGINE_SATURATION_DRIVE`/
+`TIRE_SCREECH_SATURATION_DRIVE`) that raises RMS by pushing mid-amplitude
+samples up toward the peak ceiling without hard-clipping -- verified by
+simulation to raise effective loudness roughly 2.7-4.4x while keeping
+peaks under 1.0. The debug overlay (`D`) now also shows the engine's
+current pitch bucket and whether tire screech is playing, so a future
+hardware check can tell "still too quiet" apart from "not triggering at
+all." See docs/PHASE2_RACE_LOG.md for the numbers.
+
 ### How the road gets its stereo effect
 
 Every sprite (trees, traffic cars, the player's own car, HUD) goes
