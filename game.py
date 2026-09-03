@@ -97,8 +97,13 @@ CAR_LEAN_SCALE = 11.0     # px the player car sprite nudges toward the turn
 # formula, so a hill is real geometry, not a screen-space pan. All of these
 # are separate from config.json's calibration values on purpose -- they're
 # gameplay/visual tuning, not display calibration -- see project().
-ELEVATION_Y_SCALE = 2.4        # px-on-screen per world_y unit of camera/road
+ELEVATION_Y_SCALE = 3.6        # px-on-screen per world_y unit of camera/road
                                 # height difference -- "起伏による画面Y方向の倍率"
+                                # (raised from 2.4 on 2026-09-03 feedback:
+                                # "make the hill's ups/downs more
+                                # pronounced" -- a pure rendering-scale
+                                # knob, doesn't touch world-unit geometry
+                                # or MAX_GRADE safety margins at all)
 CAMERA_ELEVATION_SMOOTHING = 6.0  # how fast cam_elevation chases the
                                    # player's actual road elevation (1/s)
 PLAYER_BOB_LOOKAHEAD = 6.0      # world units ahead sampled to sense local

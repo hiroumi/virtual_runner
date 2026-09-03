@@ -25,9 +25,16 @@ DRAW_DISTANCE = 100   # segments rendered ahead of the camera
 # tests/test_road.py against every authored hill. A safety/design ceiling
 # (not a physics limit) that keeps hills readable through the DRAW_DISTANCE
 # window instead of a wall; see ELEVATION_CHECKPOINTS below for the actual
-# authored values, which stay well under this on purpose so there's room to
-# steepen them later the same way MAX_SPEED was tuned up over time.
-MAX_GRADE = 0.09
+# authored values.
+#
+# Note this is the *peak* grade, not the average: apply_elevation's
+# smoothstep interpolation has its steepest instantaneous slope at the
+# midpoint of a transition, at 1.5x the transition's average grade
+# (H / span), not the average itself -- a hill with average grade 0.074
+# actually peaks around 0.111. Raised from 0.09 to 0.12 on 2026-09-03
+# (still headroom above the current peak of ~0.111) when HILL_HEIGHT grew
+# per user feedback; see docs/PHASE2_RACE_LOG.md.
+MAX_GRADE = 0.12
 
 
 @dataclass
@@ -69,11 +76,8 @@ def _add_bend(segments: list[Segment], peak: float, length: int) -> None:
 # One lap's worth of straights and bends, in order. Bends are
 # self-cancelling (see _add_bend) so the road promptly reads as straight
 # again right after each one -- no lingering diagonal drift -- while
-# still allowing genuine S-curves and left/right bends. The big sweeping
-# bends are deliberately low-peak/long rather than high-peak/short, so
-# they can be taken at speed instead of forcing a lift off the gas; only
-# the one chicane near the end is kept short and snappy on purpose.
-# Chosen (and tuned by rendering test frames and driving simulations, see
+# still allowing genuine S-curves and left/right bends. Chosen (and tuned
+# by rendering test frames and driving simulations, see
 # docs/PHASE2_RACE_LOG.md) so the whole course takes roughly 60-90s at a
 # believable arcade cruising speed.
 #
@@ -81,24 +85,52 @@ def _add_bend(segments: list[Segment], peak: float, length: int) -> None:
 # -- and therefore both the safety-margin math and the felt duration of
 # each bend -- stays the same as top speed climbs, instead of the same
 # bend suddenly feeling more sudden because it's now covered in less
-# real time. On top of that, every big sweeping bend here has its length
-# roughly doubled again and its peak curve roughly halved (peak*length
-# held constant, so the safety margin doesn't change) to read as a wide,
-# lazy highway curve you can hold flat-out through, rather than a
-# tighter bend that's merely survivable at speed. The one chicane is
-# only doubled in length, not halved in peak, since it's meant to stay a
-# short, snappy flick for contrast.
+# real time.
+#
+# 2026-09-03 feedback: the big sweeping bends used to each be *one* long,
+# low-peak _add_bend call -- mathematically a full right-then-left sine
+# cycle, but so gradual over that much distance that it read as a long
+# diagonal straight rather than a real curve. Replaced every one of them
+# (except the chicane, which was already short/snappy and wasn't the
+# complaint) with a short chain of shorter, alternating-sign bends whose
+# lengths sum to *exactly* the same total as before -- so every later
+# straight/bend still starts at the same segment index it always did
+# (this matters: HILL_START/VALLEY_START in the elevation section below
+# were placed relative to those indices) -- giving a genuinely winding,
+# "S字" feel of frequent direction changes instead of one long lazy
+# sweep. Each lobe keeps the original peak magnitude, just over a shorter
+# span, so its own length*peak product (and therefore its own
+# contribution to unsteered drift, per the drift-vs-time math in
+# docs/PHASE2_RACE_LOG.md) is *smaller* than the single long bend it
+# replaces -- if anything this is more conservative on the flat-out
+# safety margin, not less (verified by simulation, see the log).
 TRACK_EVENTS: list[tuple[str, float, int]] = [
     ("straight", 0.0, 120),
-    ("bend", 0.09, 210),   # long, gentle right sweep -- flat-out speed
+    # was one bend, 0.09/210 ("long, gentle right sweep")
+    ("bend", 0.09, 70),
+    ("bend", -0.09, 70),
+    ("bend", 0.09, 70),
     ("straight", 0.0, 115),
-    ("bend", -0.11, 240),  # long, gentle left sweep
+    # was one bend, -0.11/240 ("long, gentle left sweep")
+    ("bend", -0.11, 80),
+    ("bend", 0.11, 80),
+    ("bend", -0.11, 80),
     ("straight", 0.0, 115),
-    ("bend", 0.10, 290),   # lazy, wide S-curve
+    # was one bend, 0.10/290 ("lazy, wide S-curve")
+    ("bend", 0.10, 73),
+    ("bend", -0.10, 73),
+    ("bend", 0.10, 72),
+    ("bend", -0.10, 72),
     ("straight", 0.0, 120),
-    ("bend", 0.14, 190),   # medium right sweep, a bit more character
+    # was one bend, 0.14/190 ("medium right sweep")
+    ("bend", 0.14, 64),
+    ("bend", -0.14, 63),
+    ("bend", 0.14, 63),
     ("straight", 0.0, 115),
-    ("bend", -0.10, 190),  # medium left sweep
+    # was one bend, -0.10/190 ("medium left sweep")
+    ("bend", -0.10, 64),
+    ("bend", 0.10, 63),
+    ("bend", -0.10, 63),
     ("straight", 0.0, 125),
     ("bend", 0.32, 110),   # snappy right-left chicane (kept tight on purpose)
     ("straight", 0.0, 160),  # final straight to the finish
@@ -115,8 +147,8 @@ TRACK_EVENTS: list[tuple[str, float, int]] = [
 # tail of this bend") and a guaranteed ease-in/ease-out at both ends -- no
 # risk of an integration error compounding over a long course the way a
 # hand-tuned per-segment slope could.
-HILL_HEIGHT = 14.0     # world units the first hill rises -- "strength" knob
-VALLEY_DEPTH = 8.0     # world units the second feature (a dip) descends
+HILL_HEIGHT = 20.0     # world units the first hill rises -- "strength" knob
+VALLEY_DEPTH = 11.0    # world units the second feature (a dip) descends
 HILL_RISE_SEGMENTS = 90     # segments used for each smooth transition --
 HILL_CREST_SEGMENTS = 30    # "how many segments the height change spans"
 HILL_FALL_SEGMENTS = 150    # (longer than the rise: "a bit long a descent")
@@ -124,15 +156,27 @@ VALLEY_DOWN_SEGMENTS = 50
 VALLEY_HOLD_SEGMENTS = 15
 VALLEY_UP_SEGMENTS = 50
 
-# Placed mid-course on purpose (not a full-track redesign): HILL_START sits
-# in the straight right after the "lazy, wide S-curve" bend and its descent
-# deliberately runs on into the start of the following "medium right sweep"
-# bend (TRACK_EVENTS index ~1210-1400, peak 0.14) -- a curve+grade section,
-# but a gentle/medium one, not stacked with the sharp chicane. VALLEY_START
-# sits in the straight before the chicane, clear of any curve, with a 5+
-# segment flat buffer before the chicane begins at index 1830. See
-# docs/PHASE2_RACE_LOG.md for the full placement reasoning.
-HILL_START = 1095
+# Placed mid-course on purpose (not a full-track redesign). HILL_START used
+# to be 1095 (just past the halfway point); 2026-09-03 feedback asked for
+# the hill to show up earlier and be more pronounced, so it moved to 350
+# (in the straight right after the first bend group) and HILL_HEIGHT/
+# VALLEY_DEPTH both grew (see the log entry for the exact before/after).
+# Average grades: rise 20/(90*SEGMENT_LENGTH)=0.074, fall
+# 20/(150*SEGMENT_LENGTH)=0.044, valley 11/(50*SEGMENT_LENGTH)=0.073 --
+# but MAX_GRADE checks the *peak* instantaneous grade (1.5x the average,
+# see MAX_GRADE's own comment above), which lands around 0.111 for the
+# rise/valley-down transitions -- still under MAX_GRADE=0.12.
+#
+# The hill's descent still deliberately overlaps the start of the second
+# bend group (now a chain of +-0.11 alternating lobes -- see TRACK_EVENTS
+# above) -- a curve+grade section, but a gentle/medium one, not stacked
+# with the sharp chicane. VALLEY_START is unchanged (1710, in the straight
+# before the chicane, clear of any curve, with a 5+ segment flat buffer
+# before the chicane begins at index 1830) since every later segment index
+# in TRACK_EVENTS was deliberately kept identical when the bends above were
+# split into shorter lobes. See docs/PHASE2_RACE_LOG.md for the full
+# placement reasoning and verification.
+HILL_START = 350
 VALLEY_START = 1710
 
 

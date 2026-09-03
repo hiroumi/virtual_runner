@@ -495,6 +495,40 @@ verification (51/51 tests pass, headless full-course run confirmed no
 crashes; real-hardware confirmation of 60fps and the crest-occlusion feel
 through the accessory's lenses is still outstanding).
 
+**2026-09-03 follow-up feedback** (before real-hardware confirmation had
+even happened): "make the hill more pronounced and have it show up
+sooner." `HILL_START` moved from 1095 to 350 (much earlier in the
+course), `HILL_HEIGHT`/`VALLEY_DEPTH` grew (14→20 / 8→11), and
+`ELEVATION_Y_SCALE` grew (2.4→3.6, a pure rendering-scale knob that
+doesn't touch world-unit geometry). `MAX_GRADE`'s own comment was wrong
+about which value it was checking -- `apply_elevation`'s smoothstep peaks
+at 1.5x its transition's *average* grade, not the average itself -- so it
+grew from 0.09 to 0.12 alongside a corrected comment, not as a safety
+loosening. Verified with the same drift simulation as the curve rework
+below: course length/pace unaffected, 51/51 tests still pass.
+
+### Winding curves instead of long lazy sweeps (2026-09-03 feedback)
+
+Also from that same round of feedback: the big sweeping bends (peak
+0.09-0.14, 190-290 segments each) were mathematically already one full
+self-cancelling sine cycle (see `_add_bend`'s docstring) -- a right-then-
+left "S" in principle -- but so gradual over that much distance that
+driving through one read as a long diagonal straight rather than a real
+curve. Every one of them except the chicane (already short and snappy,
+not the complaint) got replaced in `TRACK_EVENTS` with a chain of 3-4
+shorter `_add_bend` calls alternating sign, e.g. `0.09/210` became
+`[0.09/70, -0.09/70, 0.09/70]` -- same total segment count, so every
+later straight/bend (and the hill/valley placement above, which is
+relative to those same segment indices) starts at exactly the index it
+always did. Each lobe keeps the original peak, just over a shorter span,
+so its own length*peak product -- and therefore its own contribution to
+unsteered drift -- is *smaller* than the single long bend it replaces:
+if anything more conservative on the flat-out safety margin, not less.
+Verified directly: a flat-out, zero-steering simulation through the new
+curves still finishes in ~74s (unchanged) with max lateral drift 0.299
+(essentially identical to the pre-rework figure of 0.28-0.30). See
+`docs/PHASE2_RACE_LOG.md` for the full before/after and verification.
+
 ### Smooth cornering: interpolating between segments
 
 Segments are 3 world units long, and during a curve consecutive
