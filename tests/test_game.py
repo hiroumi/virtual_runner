@@ -11,7 +11,10 @@ import pygame
 
 import game
 from config import default_config
+from music import BGM_DIR, MusicPlayer, MusicSelectScreen
 from road import HILL_START, SEGMENT_LENGTH, elevation_at
+
+BGM_ASSETS_PRESENT = BGM_DIR.is_dir() and any(BGM_DIR.glob("*.mp3"))
 
 
 class FakeKeys(dict):
@@ -202,6 +205,53 @@ def test_object_behind_hill_crest_is_hidden_until_crested():
     assert visible_for(HILL_START + 40) is False   # partway up the near slope: hidden
     assert visible_for(HILL_START + 160) is True   # past the crest: visible again
     pygame.quit()
+
+
+def test_game_without_a_music_player_works_exactly_as_before():
+    # Existing direct callers (including every other test in this file)
+    # construct Game(cfg) with no music arg -- must stay fully functional
+    # and BGM-free, not error out on self.music being None.
+    g = _make_game()
+    assert g.music is None
+    g.update(1 / 60, _keys())
+    g._draw()
+    pygame.quit()
+
+
+def test_game_with_a_music_player_starts_it_looping_on_construction():
+    pygame.init()
+    pygame.display.set_mode((1024, 600))
+    music = MusicPlayer()
+    music.select(2)  # BEYOND THE RED HORIZON
+    g = game.Game(default_config(), music=music)
+    assert g.music is music
+    assert music.current_name == "BEYOND THE RED HORIZON"
+    if BGM_ASSETS_PRESENT:
+        assert pygame.mixer.music.get_busy() is True
+        assert music.last_error is None
+    pygame.quit()
+
+
+def test_game_run_selects_music_before_racing(monkeypatch):
+    # game.run() (the module-level entry point main.py --race calls) must
+    # show the select screen first and hand the confirmed track into Game
+    # -- simulate the player immediately confirming track index 1.
+    monkeypatch.setattr(MusicSelectScreen, "run", lambda self, test_frames=None: 1)
+    started = {}
+    orig_start_looping = MusicPlayer.start_looping
+
+    def spy_start_looping(self):
+        started["index"] = self.index
+        return orig_start_looping(self)
+
+    monkeypatch.setattr(MusicPlayer, "start_looping", spy_start_looping)
+    game.run(test_frames=3)
+    assert started.get("index") == 1
+
+
+def test_game_run_quits_cleanly_if_music_select_screen_is_escaped(monkeypatch):
+    monkeypatch.setattr(MusicSelectScreen, "run", lambda self, test_frames=None: None)
+    game.run(test_frames=3)  # must return (no race started) without raising
 
 
 def test_every_key_binding_executes_without_crashing(monkeypatch):

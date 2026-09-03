@@ -12,6 +12,8 @@ lenses and red filter are what the player looks through.
 No original Nintendo/Virtual Boy names, logos, characters, vehicles,
 artwork, or music are used or planned. All visuals are original geometric
 placeholders (rectangles, lines, circles) until real original art exists.
+The BGM (see "Music selection" below) is likewise original, user-supplied
+audio, unrelated to any Virtual Boy/Nintendo music.
 
 ## Current status
 
@@ -30,7 +32,10 @@ placeholders (rectangles, lines, circles) until real original art exists.
   HUD) rendered through the same `StereoRenderer`. Now also has road
   elevation -- a hill (rise/crest/fall) and a valley mid-course, with
   crest occlusion for traffic/decor behind a hill -- see "Road elevation"
-  below. Log: `docs/PHASE2_RACE_LOG.md` (Japanese).
+  below. A "SELECT MUSIC" screen (see "Music selection" below) now runs
+  before the race, letting the player pick and preview one of three BGM
+  tracks, which then loops through the race itself. Log:
+  `docs/PHASE2_RACE_LOG.md` (Japanese).
 
 **Picking this back up after a break?** Start at
 `docs/NEXT_STEPS.md` (Japanese) — it's a handoff summary of exactly
@@ -366,6 +371,35 @@ how much top speed or curve length changed, and the flat-out clear time
 has stayed inside the 60-90s target (currently ~74s with a realistic
 accel ramp, vs. a 70s flat-out floor).
 
+### Music selection
+
+Before the race starts, a "SELECT MUSIC" screen (`music.py`) lets the
+player choose one of three BGM tracks: `PIXEL BREEZE`, `CRIMSON HIGHWAY`,
+`BEYOND THE RED HORIZON` (audio files committed under `bgm/` -- see
+"Project layout" below). It shows the title and a left-triangle /
+track-name / right-triangle row, drawn as
+vector polygons (not a font glyph, to stay consistent with this project's
+"everything is a drawn shape, no external art/fonts required for
+gameplay" approach) through `StereoRenderer.draw_flat`, so it's
+zero-parallax and reuses the exact same calibrated viewports as the race
+HUD -- this screen never touches `config.json`.
+
+| Key | Action |
+|---|---|
+| `Left`/`Right` or `A`/`D` | Change track (wraps at both ends) -- stops the current preview and plays the newly selected track from the beginning, looped, with a short fade-in |
+| `Enter` / `Space` | Confirm selection and start the race |
+| `Esc` | Quit (no race starts) |
+
+`PIXEL BREEZE` previews automatically the moment the screen appears.
+Confirming carries the selected track into the race, where it restarts
+from the beginning and loops (`pygame.mixer.music.play(loops=-1)`) for
+the whole race -- SDL_mixer's music channel handles the looping natively,
+no per-frame Python bookkeeping needed. `music.MusicPlayer` wraps every
+`pygame.mixer.music` call in a broad try/except: a missing or unreadable
+BGM file never crashes the game, only shows a short error line (a
+`_fit_text` helper keeps it from overflowing the narrow viewport even for
+an unusually long filename) and leaves the game running with no BGM.
+
 ### Controls
 
 | Key | Action |
@@ -577,6 +611,11 @@ road.py                  segment-based road/track model (curve, world_x,
                         world_z) shared by game.py; no drawing in here
 game.py                  Phase 2 step 2: the actual racing game (input,
                         physics, traffic/collision, HUD, road rendering)
+music.py                 pre-race "SELECT MUSIC" screen + MusicPlayer
+                        (pygame.mixer.music wrapper: track selection,
+                        preview/loop playback, safe load-error handling)
+bgm/                     the three BGM tracks music.py loads (mp3,
+                        committed -- original, user-supplied audio)
 config.py                Config/Rect dataclasses, JSON load/save, clamping
 config.json               real-hardware-verified calibration + disparity
                         safety settings (committed)
@@ -605,6 +644,11 @@ runaway curve), the elevation model (smooth/eased transitions, grade never
 exceeds `MAX_GRADE`, hill/valley reach their authored extremes), the
 racing game's rules (accelerate/coast/off-road speed caps, collision
 penalty + cooldown, finish/time-up transitions, restart, every key
-binding), and hill-specific behavior (camera elevation eases rather than
+binding), hill-specific behavior (camera elevation eases rather than
 snaps, player-car bob stays within its cap, an object behind a hill crest
-is hidden until the camera crests it).
+is hidden until the camera crests it), and the music-select screen (track
+order, next/prev wraparound in both directions -- via MusicPlayer directly
+and via the real scripted-keypress event loop -- confirm/quit, a missing
+BGM file not raising and producing a short, viewport-width-safe error
+message, and, when the `bgm/` assets are present, that all three real
+tracks actually load and play).

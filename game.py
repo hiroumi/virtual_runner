@@ -33,6 +33,7 @@ from road import (
     track_length,
     world_x_at,
 )
+from music import MusicPlayer, MusicSelectScreen
 from stereo_renderer import StereoRenderer
 
 BLACK = (0, 0, 0)
@@ -197,13 +198,29 @@ class Player:
         self.speed = 0.0
 
 
+def _make_display(cfg) -> pygame.Surface:
+    flags = pygame.FULLSCREEN if cfg.fullscreen else 0
+    return pygame.display.set_mode((cfg.output_width, cfg.output_height), flags)
+
+
 class Game:
-    def __init__(self, cfg):
+    def __init__(self, cfg, screen=None, renderer=None, music: MusicPlayer | None = None):
+        # screen/renderer/music are optional so game.run() can reuse the
+        # ones the music-select screen already set up (same window, same
+        # StereoRenderer/parallax state, same MusicPlayer -- no flicker or
+        # re-init) -- existing direct callers (tests included) that just
+        # do Game(cfg) still get a freshly created display/renderer and no
+        # BGM, exactly as before this feature existed.
         self.cfg = cfg
         self.segments = build_track()
         self.track_length = track_length(self.segments)
-        self.screen = self._make_display()
-        self.renderer = StereoRenderer(self.screen, cfg)
+        self.screen = screen if screen is not None else _make_display(cfg)
+        self.renderer = renderer if renderer is not None else StereoRenderer(self.screen, cfg)
+        self.music = music
+        if self.music is not None:
+            # Confirmed selection -> stop the (looped) preview and restart
+            # the same track from the beginning, looping, for the race.
+            self.music.start_looping()
         self.font_hud = _font(13)
         self.font_debug = _font(12)
         self.font_message = _font(18)
@@ -228,8 +245,7 @@ class Game:
         self._road_clip_before_n: list[float] = []  # crest occlusion, see _draw_road
 
     def _make_display(self) -> pygame.Surface:
-        flags = pygame.FULLSCREEN if self.cfg.fullscreen else 0
-        return pygame.display.set_mode((self.cfg.output_width, self.cfg.output_height), flags)
+        return _make_display(self.cfg)
 
     def _build_traffic(self) -> list[TrafficCar]:
         rng = random.Random(42)
@@ -653,7 +669,23 @@ def run(test_frames: int | None = None) -> None:
     pygame.init()
     pygame.display.set_caption("Virtual Boy Stereo Racing - Phase 2")
     cfg = load_config()
-    Game(cfg).run(test_frames=test_frames)
+    screen = _make_display(cfg)
+    renderer = StereoRenderer(screen, cfg)
+    music = MusicPlayer()
+
+    selected = MusicSelectScreen(renderer, music).run(test_frames=test_frames)
+    if selected is None:
+        # Quit from the select screen (Esc / window close) -- no race.
+        pygame.quit()
+        return
+    # MusicSelectScreen.run() already leaves music.index pointing at the
+    # confirmed track as a side effect of its own select()/next()/prev()
+    # calls -- select() here again anyway so Game's music state doesn't
+    # silently depend on that invariant holding in whatever returned
+    # `selected`.
+    music.select(selected)
+
+    Game(cfg, screen=screen, renderer=renderer, music=music).run(test_frames=test_frames)
 
 
 def main() -> None:
