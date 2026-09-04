@@ -35,7 +35,7 @@ from road import (
     world_x_at,
 )
 from music import MusicPlayer, MusicSelectScreen
-from sfx import ENGINE_BUCKET_COUNT, EngineSound, TireScreech
+from sfx import ENGINE_BUCKET_COUNT, ENGINE_PRESET_ORDER, EngineSound, TireScreech
 from stereo_renderer import StereoRenderer
 
 BLACK = (0, 0, 0)
@@ -69,6 +69,8 @@ PLAYER_CAR_DEPTH = 3.0  # matches the Phase 2 test scene's tuned value
 # pygame or touching config.json -- see Game._trigger_reset / run()'s
 # docstring below for the full flow.
 RESET_FLASH_MS = 150  # how long the "RESET" flat-text flash is held on screen
+
+PRESET_FLASH_MS = 1200  # how long the engine-preset name flash stays on screen
 
 # The speedometer always reads HUD_MAX_DISPLAY_SPEED at MAX_SPEED,
 # regardless of what MAX_SPEED actually is -- this lets the underlying
@@ -258,6 +260,12 @@ class Game:
         # no-ops on their own if numpy/pygame.mixer aren't usable.
         self.engine_sound = EngineSound()
         self.tire_screech = TireScreech()
+        # Brief on-screen name flash when the `E` key cycles the engine
+        # preset (see _cycle_engine_preset) -- not gated behind
+        # self.show_debug, since auditioning presets is meant to be usable
+        # even without the full debug overlay on.
+        self._preset_flash_name: str | None = None
+        self._preset_flash_until_ms = 0
 
         # run()'s exit reason ("quit" or "reset") -- see _trigger_reset
         # and run()'s docstring.
@@ -354,7 +362,23 @@ class Game:
         elif key == pygame.K_s:
             cfg.parallax_scale = renderer.parallax_scale
             save_config(cfg)
+        elif key == pygame.K_e:
+            self._cycle_engine_preset()
         return True
+
+    def _cycle_engine_preset(self) -> None:
+        """`E`: audition the engine's three synthesis presets (see
+        sfx.ENGINE_PRESETS) live during the race, since their tonal
+        character is a real-hardware listening call this session can't
+        make on its own -- see also sfx_test.py for an offline comparison
+        tool. Purely a debug/tuning aid; has no effect on config.json or
+        anything else the race depends on."""
+        order = ENGINE_PRESET_ORDER
+        current = self.engine_sound.preset_name
+        next_name = order[(order.index(current) + 1) % len(order)] if current in order else order[0]
+        self.engine_sound.set_preset(next_name)
+        self._preset_flash_name = next_name
+        self._preset_flash_until_ms = pygame.time.get_ticks() + PRESET_FLASH_MS
 
     def _restart(self) -> None:
         self.player = Player()
@@ -475,7 +499,7 @@ class Game:
             # one frame late. Tire screech reuses the centrifugal-drift
             # proxy already computed above -- see sfx.py's own comment for
             # why that stands in for lateral tire force here.
-            self.engine_sound.update(self.player.speed / MAX_SPEED, active=True)
+            self.engine_sound.update(self.player.speed / MAX_SPEED, active=True, dt=dt)
             self.tire_screech.update(abs(self.current_curve) * speed_frac, active=True)
 
             self.time_left -= dt
@@ -486,7 +510,7 @@ class Game:
                 self.time_left = 0.0
                 self.time_up = True
         else:
-            self.engine_sound.update(0.0, active=False)
+            self.engine_sound.update(0.0, active=False, dt=dt)
             self.tire_screech.update(0.0, active=False)
 
         self.last_frame_ms = pygame.time.get_ticks() - start
@@ -508,6 +532,8 @@ class Game:
             self._draw_traffic_car(car)
         renderer.draw_world(PLAYER_CAR_DEPTH, self._draw_player_car)
         renderer.draw_flat(self._draw_hud)
+        if self._preset_flash_name is not None and pygame.time.get_ticks() < self._preset_flash_until_ms:
+            renderer.draw_flat(self._draw_preset_flash)
         renderer.present()
         if self.finished or self.time_up:
             self._draw_message()
@@ -722,6 +748,11 @@ class Game:
             surf.blit(self.font_hud.render(label, True, HUD_TEXT), (rect.x + 3, rect.y + 1))
             surf.blit(self.font_hud.render(value, True, HUD_TEXT), (rect.x + 3, rect.y + 13))
 
+    def _draw_preset_flash(self, surf: pygame.Surface, ox: float) -> None:
+        w, _h = surf.get_size()
+        text = self.font_hud.render(f"ENGINE: {self._preset_flash_name}", True, MESSAGE_COLOR)
+        surf.blit(text, text.get_rect(midtop=(w / 2 + ox, 4)))
+
     def _draw_message(self) -> None:
         text = "FINISH!" if self.finished else "TIME UP"
         sub = f"score {int(self.score)}  -  R restart  -  BACKSPACE reset"
@@ -742,6 +773,7 @@ class Game:
             f"caps=[{max_out:+.0f},{max_in:+.0f}]px  player.z={self.player.z:7.1f}/{self.track_length:.0f}"
             f"  player.x={self.player.x:+.2f}  speed={self.player.speed:5.1f}",
             f"engine: {'on' if self.engine_sound.available else 'unavailable'}"
+            f" preset={self.engine_sound.preset_name}(E) rpm={self.engine_sound.engine_rpm:.2f}"
             f" bucket={self.engine_sound._bucket}/{ENGINE_BUCKET_COUNT - 1}"
             f"  tire_screech: {'on' if self.tire_screech.available else 'unavailable'}"
             f" playing={pygame.mixer.Channel(self.tire_screech.CHANNEL).get_busy() if self.tire_screech.available else False}",

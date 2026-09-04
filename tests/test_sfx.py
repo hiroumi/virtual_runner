@@ -8,16 +8,22 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import numpy as np
 import pygame
 import pytest
 
 import sfx
 from sfx import (
     ENGINE_BUCKET_COUNT,
+    ENGINE_DEFAULT_PRESET,
+    ENGINE_PRESET_ORDER,
+    ENGINE_PRESETS,
     TIRE_SCREECH_THRESHOLD,
     EngineSound,
     TireScreech,
+    _engine_noise,
     _engine_wave,
+    _harmonic_series_wave,
     _tire_screech_wave,
 )
 
@@ -26,30 +32,88 @@ def _init():
     pygame.init()
 
 
+def _run_to_target(engine: EngineSound, target_speed_frac: float, seconds: float = 2.0, dt: float = 1 / 60) -> None:
+    """Steps update() enough frames for engine_rpm's smoothed chase to
+    (nearly) reach target_speed_frac -- RPM no longer snaps instantly to
+    speed, so tests that need a settled state must simulate time passing."""
+    frames = max(1, int(seconds / dt))
+    for _ in range(frames):
+        engine.update(target_speed_frac, active=True, dt=dt)
+
+
+def test_engine_presets_are_defined_and_consistent():
+    assert set(ENGINE_PRESET_ORDER) == set(ENGINE_PRESETS.keys())
+    assert len(ENGINE_PRESET_ORDER) == 3
+    assert ENGINE_DEFAULT_PRESET in ENGINE_PRESETS
+    for preset in ENGINE_PRESETS.values():
+        assert preset.min_freq > 0
+        assert preset.max_freq > preset.min_freq
+        assert 0.0 <= preset.growl_weight_idle <= 1.0
+        assert 0.0 <= preset.growl_weight_max <= 1.0
+
+
+def test_harmonic_series_wave_stays_in_range_for_every_waveform():
+    _init()
+    t = np.arange(4410) / 44100.0
+    for waveform in ("triangle", "sawtooth", "square"):
+        wave = _harmonic_series_wave(waveform, 110.0, t, harmonics=6)
+        assert wave.max() <= 1.0 + 1e-9
+        assert wave.min() >= -1.0 - 1e-9
+        assert wave.max() > 0.1  # not silent
+
+
+def test_harmonic_series_wave_rejects_an_unknown_waveform():
+    t = np.arange(100) / 44100.0
+    with pytest.raises(ValueError):
+        _harmonic_series_wave("sine", 110.0, t, harmonics=3)
+
+
+def test_engine_noise_is_normalized_and_nonzero():
+    _init()
+    rng = np.random.default_rng(1)
+    noise = _engine_noise(4410, rng)
+    assert noise.max() <= 1.0 + 1e-9
+    assert noise.min() >= -1.0 - 1e-9
+    assert noise.max() > 0.1
+
+
 def test_engine_wave_loops_on_an_exact_whole_number_of_cycles():
     # A fractional number of cycles in the buffer would leave an audible
     # seam/click every time the loop wraps -- _engine_wave snaps its
     # actual frequency so the buffer holds a whole number of periods.
     _init()
     sample_rate = 44100
-    wave, freq = _engine_wave(123.4, sample_rate)
+    preset = ENGINE_PRESETS[ENGINE_DEFAULT_PRESET]
+    wave, freq = _engine_wave(123.4, sample_rate, rpm_frac=0.5, preset=preset)
     n = len(wave)
     cycles = freq * n / sample_rate
     assert abs(cycles - round(cycles)) < 1e-6
     assert freq > 0
 
 
-def test_engine_wave_stays_within_the_normalized_range():
+@pytest.mark.parametrize("preset_name", ENGINE_PRESET_ORDER)
+@pytest.mark.parametrize("rpm_frac", [0.0, 0.5, 1.0])
+def test_engine_wave_stays_within_the_normalized_range(preset_name, rpm_frac):
     _init()
-    wave, _freq = _engine_wave(150.0, 44100)
+    preset = ENGINE_PRESETS[preset_name]
+    wave, _freq = _engine_wave(150.0, 44100, rpm_frac=rpm_frac, preset=preset)
     assert wave.max() <= 1.0
     assert wave.min() >= -1.0
+    assert wave.max() > 0.05  # not silent, even at idle (rpm_frac=0)
+
+
+def test_render_engine_preview_returns_the_requested_duration():
+    _init()
+    preset = ENGINE_PRESETS[ENGINE_DEFAULT_PRESET]
+    sample_rate = 44100
+    samples = sfx.render_engine_preview(preset, 0.5, sample_rate, duration_s=1.5)
+    assert len(samples) == int(1.5 * sample_rate)
+    assert samples.max() <= 1.0
+    assert samples.min() >= -1.0
 
 
 def test_tire_screech_wave_is_normalized_and_nonzero():
     _init()
-    import numpy as np
-
     rng = np.random.default_rng(1)
     wave = _tire_screech_wave(44100, rng)
     assert wave.max() <= 1.0
@@ -61,7 +125,16 @@ def test_engine_sound_is_available_when_mixer_is_initialized():
     _init()
     e = EngineSound()
     assert e.available is True
-    assert len(e._sounds) == ENGINE_BUCKET_COUNT
+    assert set(e._sounds_by_preset.keys()) == set(ENGINE_PRESET_ORDER)
+    for name in ENGINE_PRESET_ORDER:
+        assert len(e._sounds_by_preset[name]) == ENGINE_BUCKET_COUNT
+    pygame.quit()
+
+
+def test_engine_sound_defaults_to_the_default_preset():
+    _init()
+    e = EngineSound()
+    assert e.preset_name == ENGINE_DEFAULT_PRESET
     pygame.quit()
 
 
@@ -70,29 +143,62 @@ def test_engine_bucket_increases_monotonically_with_speed():
     e = EngineSound()
     prev = -1
     for speed_frac in (0.0, 0.1, 0.25, 0.4, 0.6, 0.8, 1.0):
-        e.update(speed_frac, active=True)
+        _run_to_target(e, speed_frac, seconds=2.0)
         assert e._bucket >= prev
         prev = e._bucket
+    assert prev == ENGINE_BUCKET_COUNT - 1  # reached the top bucket at speed_frac=1.0
+    pygame.quit()
+
+
+def test_engine_rpm_does_not_snap_instantly_to_a_new_target():
+    # Regression test for the RPM-smoothing redesign: a single frame's
+    # update() must not jump engine_rpm straight to the target -- that
+    # was the old (direct speed->pitch) behavior this replaced.
+    _init()
+    e = EngineSound()
+    e.update(1.0, active=True, dt=1 / 60)
+    assert 0.0 < e.engine_rpm < 0.3
+    pygame.quit()
+
+
+def test_engine_rpm_rises_faster_than_it_falls():
+    _init()
+    e = EngineSound()
+    _run_to_target(e, 1.0, seconds=1.0)
+    risen = e.engine_rpm
+    assert risen > 0.5  # sanity: a full second of rise time got most of the way up
+
+    _run_to_target(e, 0.0, seconds=1.0)
+    fallen_amount = risen - e.engine_rpm
+
+    # Reset and measure the same one second of *rise* from 0 for comparison.
+    e2 = EngineSound()
+    _run_to_target(e2, 1.0, seconds=1.0)
+    risen_amount = e2.engine_rpm
+
+    assert risen_amount > fallen_amount  # rises further in the same time than it falls
     pygame.quit()
 
 
 def test_engine_sound_crossfades_between_alternating_channels():
     _init()
     e = EngineSound()
-    e.update(0.0, active=True)
+    e.update(0.0, active=True, dt=1 / 60)
     first_channel = e._active_channel
-    e.update(1.0, active=True)  # big enough jump to guarantee a new bucket
+    _run_to_target(e, 1.0, seconds=2.0)  # long enough to guarantee a new bucket
     assert e._active_channel != first_channel
     pygame.quit()
 
 
-def test_engine_sound_stop_marks_not_started_and_is_idempotent():
+def test_engine_sound_stop_marks_not_started_and_resets_rpm():
     _init()
     e = EngineSound()
-    e.update(0.5, active=True)
+    _run_to_target(e, 0.8, seconds=1.0)
     assert e._started is True
+    assert e.engine_rpm > 0.0
     e.stop()
     assert e._started is False
+    assert e.engine_rpm == 0.0
     e.stop()  # calling again on an already-stopped player must not raise
     pygame.quit()
 
@@ -100,10 +206,54 @@ def test_engine_sound_stop_marks_not_started_and_is_idempotent():
 def test_engine_sound_update_with_active_false_stops_it():
     _init()
     e = EngineSound()
-    e.update(0.5, active=True)
+    e.update(0.5, active=True, dt=1 / 60)
     assert e._started is True
-    e.update(0.0, active=False)
+    e.update(0.0, active=False, dt=1 / 60)
     assert e._started is False
+    pygame.quit()
+
+
+def test_set_preset_switches_the_active_preset():
+    _init()
+    e = EngineSound()
+    other = next(name for name in ENGINE_PRESET_ORDER if name != e.preset_name)
+    e.set_preset(other)
+    assert e.preset_name == other
+    pygame.quit()
+
+
+def test_set_preset_retriggers_playback_on_the_new_preset(monkeypatch):
+    _init()
+    e = EngineSound()
+    e.update(0.5, active=True, dt=1 / 60)
+    assert e._started is True
+    channel_before = e._active_channel
+
+    other = next(name for name in ENGINE_PRESET_ORDER if name != e.preset_name)
+    e.set_preset(other)
+    assert e._bucket == -1  # forced re-trigger on the next update()
+
+    e.update(0.5, active=True, dt=1 / 60)
+    assert e._active_channel != channel_before  # crossfaded to the new preset's sound
+    pygame.quit()
+
+
+def test_set_preset_ignores_an_unknown_name():
+    _init()
+    e = EngineSound()
+    before = e.preset_name
+    e.set_preset("NOT A REAL PRESET")
+    assert e.preset_name == before
+    pygame.quit()
+
+
+def test_set_preset_to_the_current_preset_is_a_noop():
+    _init()
+    e = EngineSound()
+    e.update(0.5, active=True, dt=1 / 60)
+    bucket_before = e._bucket
+    e.set_preset(e.preset_name)
+    assert e._bucket == bucket_before  # no forced re-trigger
     pygame.quit()
 
 
@@ -176,7 +326,7 @@ def test_engine_sound_degrades_silently_when_mixer_unavailable(monkeypatch):
     e = EngineSound()
     assert e.available is False
     assert "not initialized" in e.unavailable_reason
-    e.update(0.5, active=True)  # must not raise
+    e.update(0.5, active=True, dt=1 / 60)  # must not raise
     e.stop()
     pygame.quit()
 
@@ -198,7 +348,7 @@ def test_engine_sound_degrades_silently_when_numpy_is_unavailable(monkeypatch):
     e = EngineSound()
     assert e.available is False
     assert e.unavailable_reason == "numpy not installed"
-    e.update(0.5, active=True)
+    e.update(0.5, active=True, dt=1 / 60)
     pygame.quit()
 
 

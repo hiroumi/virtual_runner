@@ -1,10 +1,10 @@
-"""Synthesized sound effects: engine drone (pitch follows speed) and tire
-screech (triggered by hard cornering). No audio files -- every waveform is
-generated once at startup with numpy and handed to pygame.mixer via
-pygame.sndarray, matching this project's "everything is generated, no
-external art/assets required for gameplay" approach (see README's "no
-original Nintendo art" note; BGM is the one deliberate exception, since
-it's user-supplied original music, not a placeholder).
+"""Synthesized sound effects: engine drone (RPM-driven, three switchable
+presets) and tire screech (triggered by hard cornering). No audio files --
+every waveform is generated once at startup with numpy and handed to
+pygame.mixer via pygame.sndarray, matching this project's "everything is
+generated, no external art/assets required for gameplay" approach (see
+README's "no original Nintendo art" note; BGM is the one deliberate
+exception, since it's user-supplied original music, not a placeholder).
 
 Degrades silently and completely if numpy or pygame.mixer aren't usable
 (no audio device, mixer failed to init, etc.) -- every public method
@@ -15,6 +15,7 @@ never be able to crash the race.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import pygame
 
@@ -26,44 +27,122 @@ except ImportError:  # pragma: no cover -- exercised only if numpy truly missing
 SAMPLE_DTYPE = "int16"
 
 # -- Engine ------------------------------------------------------------------
-# Pitch is quantized into buckets (pygame can't retune a looping Sound in
-# real time), each a pre-rendered loop crossfaded in as speed_frac crosses
-# into its range -- enough buckets that the steps read as continuous
-# pitch travel rather than audible jumps.
-ENGINE_BUCKET_COUNT = 16
-ENGINE_MIN_FREQ = 70.0          # Hz, idle
-ENGINE_MAX_FREQ = 240.0         # Hz, redline
-ENGINE_LOOP_SECONDS = 0.22      # each bucket's pre-rendered loop length
-ENGINE_CROSSFADE_MS = 90        # fade between old/new bucket on a pitch change
-# 2026-09-04: real-hardware feedback was "barely audible." Measured why --
-# a handful of pure sine harmonics summed and normalized has RMS ~0.37 of
-# full digital scale (a plain sine alone would be ~0.71), nowhere near the
-# loudness of a mastered BGM track, so even before the (also too low)
-# ENGINE_VOLUME multiplier, the source signal itself was quiet. Fixed with
-# both a volume increase (0.32 -> 0.8) and _soft_clip: tanh-based
-# saturation pushes RMS up toward the 1.0 peak by driving mid-amplitude
-# samples closer to the clip ceiling (a standard "make it sound louder
-# without just raising the peak" trick) without hard-clipping/crackling.
+# 2026-09-04 (fifth pass): once the mixer-trigger bug was fixed and the
+# engine sound could finally be heard and judged properly (see git log /
+# docs/PHASE2_RACE_LOG.md for the earlier passes), the feedback was that
+# the *idle* tone read fine but the *driving* tone didn't read as a car
+# engine at all. The previous design's root problem: speed_frac mapped
+# straight to pitch (no RPM concept, no throttle lag) through a handful of
+# pure sine harmonics (a smooth, organ-like timbre with no mechanical
+# texture), with "louder/thicker" attempted purely via volume and tanh
+# saturation rather than the waveform itself -- exactly the ingredients
+# for "sounds like a buzzer/alarm," which is what got reported.
 #
-# 2026-09-04 (second pass): after confirming Reset works on real hardware,
-# the user reported the SFX were *still* barely noticeable even with the
-# above fix, so both knobs were pushed further (ENGINE_VOLUME to 1.0,
-# ENGINE_SATURATION_DRIVE to 5.0). That turned out to be chasing the wrong
-# problem: real-hardware debugging (see the mixer pre_init / numpy fix and
-# unavailable_reason elsewhere in this file's history) found the engine
-# sound had actually not been *triggering at all* up to that point, on
-# that machine -- so neither the first nor second volume pass had ever
-# really been heard. Once the real bug was fixed and the sound finally
-# played, the "make it louder" settings from these two blind passes turned
-# out to be too much: "ちょっとうるさい" (a bit too loud/harsh). Rolled
-# back to the first pass's numbers as a clean, previously-reasoned
-# starting point now that the sound is confirmed to actually be audible --
-# simulated RMS 0.525, peak 0.954 (see docs/PHASE2_RACE_LOG.md).
-ENGINE_VOLUME = 0.8
-ENGINE_SATURATION_DRIVE = 2.5    # higher = louder/grittier, see _soft_clip
-ENGINE_HARMONICS = ((1, 1.0), (2, 0.5), (3, 0.3), (4, 0.15), (5, 0.08))
-ENGINE_WOBBLE_HZ = 7.0          # slow tremolo for a rougher, less pure-tone feel
+# Redesigned around three things the old version didn't have:
+#   1. An internal RPM state (EngineSound.engine_rpm, 0..1) separate from
+#      raw speed, smoothed with asymmetric rise/fall rates -- revs up
+#      promptly on throttle, drifts back down more slowly on lift-off or
+#      a collision, instead of snapping straight to whatever speed is.
+#   2. A layered waveform per RPM bucket: a low, rounded "fundamental"
+#      (triangle- or square-family, built from a *controlled* number of
+#      harmonics -- see _harmonic_series_wave -- not a naive discontinuous
+#      wave) that stays dominant even at redline, plus a brighter "growl"
+#      layer at the *same* pitch (more harmonic content, not a second
+#      note) whose mix share grows with RPM, plus a small constant noise
+#      texture for mechanical grit. See EnginePreset / _engine_wave.
+#   3. Three switchable presets (ENGINE_PRESETS) instead of one guessed
+#      recipe -- tone is a real-hardware listening call this session can't
+#      make, so game.py's `E` key cycles them live and sfx_test.py offers
+#      an audition tool + WAV export for offline comparison.
+ENGINE_BUCKET_COUNT = 16
+ENGINE_LOOP_SECONDS = 0.22       # each bucket's pre-rendered loop length
+ENGINE_CROSSFADE_MS = 90         # fade between old/new bucket on an RPM change
+ENGINE_WOBBLE_HZ = 7.0           # slow tremolo for a rougher, less pure-tone feel
 ENGINE_WOBBLE_DEPTH = 0.05
+
+# RPM chases a speed-derived target rather than snapping to it -- rising
+# quickly (throttle response should read as immediate: "アクセルを押すと
+# 回転数が上がっていくことが明確に分かる") and falling more slowly (engine
+# braking / coasting: "アクセルを離すと、少し遅れて回転数が下がる"). The
+# same asymmetric chase also covers "衝突・急減速：回転数も遅れて下がる"
+# for free, since a collision is just a sudden drop in the same target.
+ENGINE_RPM_RISE_RATE = 3.5      # 1/s
+ENGINE_RPM_FALL_RATE = 1.2      # 1/s
+
+# The fundamental's mix share is never allowed below this, however large
+# growl+noise get -- "最高速では高音だけにならず、低いエンジン成分も残る".
+ENGINE_FUNDAMENTAL_FLOOR = 0.45
+
+
+@dataclass(frozen=True)
+class EnginePreset:
+    """One synthesis recipe. fundamental_wave/growl_wave are keys into
+    _harmonic_series_wave ('triangle' or 'square' for the fundamental;
+    'sawtooth' or 'square' for the growl layer). growl_weight_idle/_max
+    are that layer's share of the mix at RPM 0 and RPM 1 respectively,
+    interpolated linearly by RPM in between. saturation_drive is kept
+    gentle everywhere -- a peak-safety limiter, not the primary way this
+    version makes the engine sound "thick" (that's the waveform layering
+    itself, per the 2026-09-04 fifth-pass redesign above)."""
+
+    name: str
+    min_freq: float             # Hz at RPM 0 (idle)
+    max_freq: float             # Hz at RPM 1 (redline)
+    fundamental_wave: str
+    fundamental_harmonics: int
+    growl_wave: str
+    growl_harmonics: int
+    growl_weight_idle: float
+    growl_weight_max: float
+    noise_weight: float         # constant mechanical-grit mix share
+    saturation_drive: float
+    volume: float
+
+
+ENGINE_PRESETS: dict[str, EnginePreset] = {
+    "LOW RUMBLE": EnginePreset(
+        name="LOW RUMBLE",
+        min_freq=62.0, max_freq=125.0,
+        fundamental_wave="triangle", fundamental_harmonics=7,
+        growl_wave="sawtooth", growl_harmonics=6,
+        growl_weight_idle=0.04, growl_weight_max=0.22,
+        noise_weight=0.05,
+        saturation_drive=1.15,
+        volume=0.8,
+    ),
+    "ARCADE ENGINE": EnginePreset(
+        name="ARCADE ENGINE",
+        min_freq=68.0, max_freq=150.0,
+        fundamental_wave="triangle", fundamental_harmonics=7,
+        growl_wave="sawtooth", growl_harmonics=8,
+        growl_weight_idle=0.06, growl_weight_max=0.40,
+        noise_weight=0.07,
+        saturation_drive=1.2,
+        volume=0.8,
+    ),
+    "CHIP ENGINE": EnginePreset(
+        name="CHIP ENGINE",
+        min_freq=70.0, max_freq=165.0,
+        fundamental_wave="square", fundamental_harmonics=4,
+        growl_wave="square", growl_harmonics=7,
+        growl_weight_idle=0.08, growl_weight_max=0.38,
+        noise_weight=0.05,
+        saturation_drive=1.15,
+        volume=0.75,
+    ),
+}
+ENGINE_PRESET_ORDER = ["LOW RUMBLE", "ARCADE ENGINE", "CHIP ENGINE"]
+ENGINE_DEFAULT_PRESET = "ARCADE ENGINE"
+
+# Representative speed_frac values for the SFX TEST tool / debug WAV
+# export (sfx_test.py) -- an ordinary dict so insertion order (idle, low,
+# medium, high) is preserved for anything that iterates it.
+SPEED_LEVELS: dict[str, float] = {
+    "idle": 0.0,
+    "low": 0.28,
+    "medium": 0.58,
+    "high": 0.95,
+}
 
 # -- Tire screech --------------------------------------------------------
 # abs(current_curve) * speed_frac is already computed every frame in
@@ -75,13 +154,16 @@ ENGINE_WOBBLE_DEPTH = 0.05
 TIRE_SCREECH_THRESHOLD = 0.15
 TIRE_SCREECH_SECONDS = 0.35
 TIRE_SCREECH_FADE_MS = 120
-# 2026-09-04 (second pass, see ENGINE_VOLUME's comment): raised again to
+# 2026-09-04 (second pass, see the engine's history above): raised to
 # 1.0/2.4 after "still barely audible" feedback -- which, like the
 # engine's second pass, turned out to be chasing a real trigger bug (the
 # SFX weren't playing at all on that machine yet), not an actual loudness
 # ceiling. Rolled back to the first pass's 0.8/1.6 once the real bug was
 # fixed and the SFX turned out to be too loud/harsh at the maxed-out
-# settings ("ちょっとうるさい"). Simulated RMS 0.319, peak 0.9.
+# settings ("ちょっとうるさい"). Simulated RMS 0.319, peak 0.9. Left
+# untouched by the fifth-pass engine redesign -- only the engine's
+# waveform/character was reported as wrong; tire screech is explicitly
+# out of scope for that change.
 TIRE_SCREECH_VOLUME = 0.8
 TIRE_SCREECH_SATURATION_DRIVE = 1.6  # gentler than the engine's -- too much
                                       # saturation flattens the noise into
@@ -110,7 +192,10 @@ def _soft_clip(x: "np.ndarray", drive: float) -> "np.ndarray":
     """tanh saturation, rescaled so a full-scale input (peak exactly 1.0)
     still peaks at exactly 1.0 after saturation -- raises RMS (perceived
     loudness) by pulling mid-amplitude samples up toward the ceiling,
-    without pushing the peak past it or hard-clipping into crackle."""
+    without pushing the peak past it or hard-clipping into crackle. Used
+    as a gentle peak-safety net on the engine (low drive, see
+    EnginePreset.saturation_drive) and as the tire screech's primary
+    loudness tool (higher drive, see TIRE_SCREECH_SATURATION_DRIVE)."""
     return np.tanh(x * drive) / math.tanh(drive)
 
 
@@ -121,23 +206,117 @@ def _to_sound(mono: "np.ndarray", channels: int) -> pygame.mixer.Sound:
     return pygame.sndarray.make_sound(np.ascontiguousarray(arr))
 
 
-def _engine_wave(target_freq: float, sample_rate: int) -> tuple["np.ndarray", float]:
-    """Additive-synthesis engine drone, snapped to an exact whole number of
-    cycles within its buffer so the loop has no seam/click -- returns the
-    waveform and the actual (slightly snapped) frequency used."""
+def _harmonic_series_wave(waveform: str, freq: float, t: "np.ndarray", harmonics: int) -> "np.ndarray":
+    """A band-limited (truncated Fourier series) approximation of a
+    classic analog waveform, built from an exact, controlled number of
+    sine harmonics -- not a naive discontinuous square/sawtooth, whose
+    brightness would depend on however many harmonics fit under the
+    sample rate rather than being a tunable knob. More `harmonics` reads
+    as brighter/buzzier; fewer reads as rounder/simpler (used for the
+    CHIP ENGINE preset's more "stepped" chiptune character).
+
+    Normalized to unit peak before returning -- truncating a Fourier
+    series causes Gibbs-phenomenon overshoot near the waveform's edges,
+    so the raw sum doesn't peak at exactly 1.0 on its own."""
+    wave = np.zeros_like(t)
+    if waveform == "triangle":
+        # Odd harmonics only, amplitude ~1/k^2 with alternating sign --
+        # the classic triangle-wave series: rounded, warm, "thick"
+        # without being buzzy.
+        k = 1
+        sign = 1.0
+        for _ in range(max(1, harmonics)):
+            wave += sign * (1.0 / (k * k)) * np.sin(2 * math.pi * freq * k * t)
+            sign = -sign
+            k += 2
+    elif waveform == "sawtooth":
+        # All harmonics, amplitude ~1/k -- brighter/richer, used as the
+        # "growl" layer's extra harmonic energy at the same pitch.
+        for k in range(1, max(1, harmonics) + 1):
+            sign = 1.0 if k % 2 else -1.0
+            wave += sign * (1.0 / k) * np.sin(2 * math.pi * freq * k * t)
+    elif waveform == "square":
+        # Odd harmonics, amplitude ~1/k -- hollow, "chip"-like character.
+        k = 1
+        for _ in range(max(1, harmonics)):
+            wave += (1.0 / k) * np.sin(2 * math.pi * freq * k * t)
+            k += 2
+    else:
+        raise ValueError(f"unknown waveform {waveform!r}")
+    peak = np.max(np.abs(wave))
+    if peak > 1e-9:
+        wave = wave / peak
+    return wave
+
+
+def _engine_noise(n: int, rng: "np.random.Generator") -> "np.ndarray":
+    """A small mechanical-grit texture -- distinct from the tire
+    screech's sharp, high-passed noise (see _tire_screech_wave): plain
+    broadband noise smoothed with a short moving average to roll off the
+    harshest highs into more of a soft rumble/hiss, since this is meant
+    to sit quietly *under* the tonal layers, not stand out on its own.
+    Normalized to unit peak."""
+    raw = rng.uniform(-1.0, 1.0, n)
+    kernel = np.ones(5) / 5.0
+    padded = np.pad(raw, (2, 2), mode="wrap")  # wrap, not zero-pad, so the
+    smoothed = np.convolve(padded, kernel, mode="valid")  # loop has no seam
+    peak = np.max(np.abs(smoothed))
+    return smoothed / peak if peak > 1e-9 else smoothed
+
+
+def _engine_wave(
+    target_freq: float,
+    sample_rate: int,
+    rpm_frac: float,
+    preset: EnginePreset,
+    seed: int = 0,
+) -> tuple["np.ndarray", float]:
+    """One RPM bucket's loop for `preset`: a low fundamental (dominant,
+    never below ENGINE_FUNDAMENTAL_FLOOR of the mix), a brighter growl
+    layer at the *same* pitch (more harmonic content standing in for
+    rising engine load, not a second note) whose mix share grows with
+    rpm_frac, and a small constant noise texture. Snapped to an exact
+    whole number of cycles so the loop has no seam/click."""
     n = max(1, int(round(ENGINE_LOOP_SECONDS * sample_rate)))
     cycles = max(1, int(round(target_freq * n / sample_rate)))
     freq = cycles * sample_rate / n
     t = np.arange(n) / sample_rate
-    total_amp = sum(amp for _, amp in ENGINE_HARMONICS)
-    wave = np.zeros(n)
-    for harmonic, amp in ENGINE_HARMONICS:
-        wave += amp * np.sin(2 * math.pi * freq * harmonic * t)
-    wave /= total_amp
-    wave = _soft_clip(wave, ENGINE_SATURATION_DRIVE)
+
+    fundamental = _harmonic_series_wave(preset.fundamental_wave, freq, t, preset.fundamental_harmonics)
+    growl = _harmonic_series_wave(preset.growl_wave, freq, t, preset.growl_harmonics)
+    noise = _engine_noise(n, np.random.default_rng(seed))
+
+    growl_amt = preset.growl_weight_idle + (preset.growl_weight_max - preset.growl_weight_idle) * rpm_frac
+    noise_amt = preset.noise_weight
+    fundamental_amt = max(ENGINE_FUNDAMENTAL_FLOOR, 1.0 - growl_amt - noise_amt)
+    # The floor above can push the three weights' sum over 1 -- renormalize
+    # so output level stays consistent across buckets/presets regardless
+    # of how often the floor actually kicks in.
+    total = fundamental_amt + growl_amt + noise_amt
+    fundamental_amt, growl_amt, noise_amt = (w / total for w in (fundamental_amt, growl_amt, noise_amt))
+
+    wave = fundamental_amt * fundamental + growl_amt * growl + noise_amt * noise
+    wave = _soft_clip(wave, preset.saturation_drive)
     wobble = 1.0 + ENGINE_WOBBLE_DEPTH * np.sin(2 * math.pi * ENGINE_WOBBLE_HZ * t)
     wave *= wobble
     return wave * 0.95, freq
+
+
+def render_engine_preview(
+    preset: EnginePreset, speed_frac: float, sample_rate: int, duration_s: float = 1.6, seed: int = 0,
+) -> "np.ndarray":
+    """Renders `duration_s` seconds of `preset` at a fixed (not
+    RPM-smoothed) speed_frac, for offline audition/export -- see
+    sfx_test.py. Reuses _engine_wave's already loop-safe short buffer and
+    tiles it, since that buffer is already snapped to a whole number of
+    cycles and needs no re-deriving for a longer duration."""
+    frac = max(0.0, min(1.0, speed_frac))
+    target = preset.min_freq + (preset.max_freq - preset.min_freq) * frac
+    wave, _freq = _engine_wave(target, sample_rate, frac, preset, seed=seed)
+    total_samples = max(1, int(duration_s * sample_rate))
+    repeats = max(1, -(-total_samples // len(wave)))  # ceil division
+    tiled = np.tile(wave, repeats)
+    return tiled[:total_samples]
 
 
 def _tire_screech_wave(sample_rate: int, rng: "np.random.Generator") -> "np.ndarray":
@@ -173,16 +352,21 @@ def _tire_screech_wave(sample_rate: int, rng: "np.random.Generator") -> "np.ndar
 
 
 class EngineSound:
-    """Owns two alternating mixer channels so a pitch-bucket change can
-    crossfade instead of hard-cutting -- see ENGINE_CROSSFADE_MS."""
+    """Owns two alternating mixer channels so an RPM-bucket change can
+    crossfade instead of hard-cutting -- see ENGINE_CROSSFADE_MS. All
+    three presets (ENGINE_PRESETS) are pre-rendered up front so
+    set_preset() can switch instantly with no synthesis stutter -- see
+    game.py's `E` key and sfx_test.py's audition tool."""
 
     CHANNEL_A = 0
     CHANNEL_B = 1
 
-    def __init__(self):
+    def __init__(self, preset: str = ENGINE_DEFAULT_PRESET):
         self.available = False
         self.unavailable_reason: str | None = None
-        self._sounds: list[pygame.mixer.Sound] = []
+        self._sounds_by_preset: dict[str, list[pygame.mixer.Sound]] = {}
+        self.preset_name = preset
+        self.engine_rpm = 0.0
         self._bucket = -1
         self._active_channel = None  # which of CHANNEL_A/B is currently "live"
         self._started = False
@@ -196,36 +380,55 @@ class EngineSound:
             return
         sample_rate, channels = fmt
         try:
-            for i in range(ENGINE_BUCKET_COUNT):
-                frac = i / max(1, ENGINE_BUCKET_COUNT - 1)
-                target = ENGINE_MIN_FREQ + (ENGINE_MAX_FREQ - ENGINE_MIN_FREQ) * frac
-                wave, _actual_freq = _engine_wave(target, sample_rate)
-                sound = _to_sound(wave, channels)
-                sound.set_volume(ENGINE_VOLUME)
-                self._sounds.append(sound)
+            for name, p in ENGINE_PRESETS.items():
+                sounds = []
+                for i in range(ENGINE_BUCKET_COUNT):
+                    frac = i / max(1, ENGINE_BUCKET_COUNT - 1)
+                    target = p.min_freq + (p.max_freq - p.min_freq) * frac
+                    wave, _actual_freq = _engine_wave(target, sample_rate, frac, p, seed=i)
+                    sound = _to_sound(wave, channels)
+                    sound.set_volume(p.volume)
+                    sounds.append(sound)
+                self._sounds_by_preset[name] = sounds
             self.available = True
         except (pygame.error, ValueError) as exc:
-            self._sounds = []
+            self._sounds_by_preset = {}
             self.available = False
             self.unavailable_reason = f"sound creation failed: {exc.__class__.__name__}: {exc}"
 
-    def _bucket_for(self, speed_frac: float) -> int:
-        speed_frac = max(0.0, min(1.0, speed_frac))
-        return min(ENGINE_BUCKET_COUNT - 1, int(speed_frac * ENGINE_BUCKET_COUNT))
+    def set_preset(self, name: str) -> None:
+        """Switches synthesis recipe. If the engine is currently playing,
+        immediately re-triggers the current RPM bucket using the new
+        preset's sound (crossfaded) rather than waiting for the RPM to
+        cross into a different bucket on its own -- a preset switch should
+        be heard right away, not eventually."""
+        if name not in self._sounds_by_preset or name == self.preset_name:
+            return
+        self.preset_name = name
+        if self._started:
+            self._bucket = -1  # forces update()'s "bucket changed" branch next call
 
-    def update(self, speed_frac: float, active: bool) -> None:
+    def _bucket_for(self, rpm: float) -> int:
+        rpm = max(0.0, min(1.0, rpm))
+        return min(ENGINE_BUCKET_COUNT - 1, int(rpm * ENGINE_BUCKET_COUNT))
+
+    def update(self, speed_frac: float, active: bool, dt: float) -> None:
         if not self.available:
             return
         if not active:
             self.stop()
             return
 
-        bucket = self._bucket_for(speed_frac)
+        target_rpm = max(0.0, min(1.0, speed_frac))
+        rate = ENGINE_RPM_RISE_RATE if target_rpm > self.engine_rpm else ENGINE_RPM_FALL_RATE
+        self.engine_rpm += (target_rpm - self.engine_rpm) * min(1.0, rate * dt)
+
+        bucket = self._bucket_for(self.engine_rpm)
         if bucket == self._bucket and self._started:
-            return  # still in the same pitch bucket, already playing -- nothing to do
+            return  # still in the same RPM bucket, already playing -- nothing to do
 
         self._bucket = bucket
-        sound = self._sounds[bucket]
+        sound = self._sounds_by_preset[self.preset_name][bucket]
         next_channel = self.CHANNEL_B if self._active_channel == self.CHANNEL_A else self.CHANNEL_A
         try:
             if not self._started:
@@ -251,6 +454,7 @@ class EngineSound:
         self._started = False
         self._bucket = -1
         self._active_channel = None
+        self.engine_rpm = 0.0
 
 
 class TireScreech:

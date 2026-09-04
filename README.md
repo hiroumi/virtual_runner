@@ -417,6 +417,7 @@ playing at full (100%) volume.
 | `Z` | Toggle all parallax off (debug A/B) |
 | `I` | Debug: invert disparity sign |
 | `D` | Toggle FPS / frame-time / depth debug overlay |
+| `E` | Cycle the engine sound preset (LOW RUMBLE / ARCADE ENGINE / CHIP ENGINE) |
 | `F` | Toggle fullscreen / windowed |
 | `S` | Save current `parallax_scale` to `config.json` |
 | `R` | Restart the race (same BGM/settings, current race from the top) |
@@ -465,17 +466,25 @@ approach for its visuals. Asked which approach to use, since these SFX
 need continuous pitch/intensity changes tied to gameplay (not a fixed
 recording), the answer was code synthesis over file-based SFX.
 
-- **Engine**: an additively-synthesized drone (5 harmonics) pre-rendered
-  into `ENGINE_BUCKET_COUNT` (16) discrete pitch buckets from
-  `ENGINE_MIN_FREQ` (idle) to `ENGINE_MAX_FREQ` (redline) -- pygame can't
+- **Engine** (redesigned 2026-09-04, fifth pass -- see below): an
+  internal `engine_rpm` (0-1) chases a speed-derived target with
+  asymmetric smoothing (rises quickly, falls more slowly -- throttle
+  response reads as immediate, lift-off/collision as a lagging RPM drop),
+  rather than mapping speed straight to pitch. Each RPM bucket's loop is
+  a layered waveform: a low, rounded "fundamental" (triangle- or
+  square-family, see `_harmonic_series_wave`) that stays dominant even at
+  redline (`ENGINE_FUNDAMENTAL_FLOOR`), plus a brighter "growl" layer at
+  the *same* pitch (more harmonic content, not a second note) whose mix
+  share grows with RPM, plus a small constant noise texture for
+  mechanical grit. Three switchable presets (`ENGINE_PRESETS`) offer
+  different recipes -- see "Engine sound presets" below. Pygame can't
   retune a looping `Sound` in real time, so `EngineSound` picks the
-  nearest bucket for the current `speed_frac` each frame and, when the
-  bucket changes, crossfades between two alternating mixer channels
-  (`ENGINE_CROSSFADE_MS`) rather than hard-cutting. Each bucket's loop
-  buffer is snapped to hold an exact whole number of wave cycles so it
-  loops with no seam/click. Recomputed right after collision handling in
-  `Game.update()`, so a hit's speed drop is audible the same frame, not
-  one frame late.
+  nearest RPM bucket each frame and, when it changes, crossfades between
+  two alternating mixer channels (`ENGINE_CROSSFADE_MS`) rather than
+  hard-cutting. Each bucket's loop buffer is snapped to hold an exact
+  whole number of wave cycles so it loops with no seam/click. Recomputed
+  right after collision handling in `Game.update()`, so a hit's speed
+  drop is audible the same frame, not one frame late.
 - **Tire screech**: reuses `abs(current_curve) * speed_frac` -- the same
   centrifugal-drift proxy `Game.update()` already computes every frame --
   as a stand-in for lateral tire force (there's no real slip/grip model).
@@ -572,6 +581,56 @@ four constants back to their first-pass values
 clean, previously-reasoned starting point now that the SFX are confirmed
 to actually play -- this is the first time they're being judged with the
 trigger bug out of the picture, so further tuning from here is expected.
+
+**2026-09-04, fifth pass: with the SFX confirmed to actually play, the
+feedback shifted from "can't hear it" to "the engine sound while driving
+just isn't the right sound"** -- idle was fine, but the driving tone
+didn't read as a car engine. Root cause: the previous engine mapped speed
+straight to pitch (no RPM concept, no throttle lag) through a handful of
+pure sine harmonics -- a smooth, organ-like timbre with no mechanical
+texture, and "louder/thicker" was attempted purely via volume and tanh
+saturation rather than the waveform itself. That combination reads as a
+tone generator/alarm, not a sports car. Redesigned from scratch around
+an RPM model and layered waveform synthesis (see the "Engine" bullet
+above) with much gentler saturation (`saturation_drive` 1.15-1.2, a
+peak-safety net now, not the primary loudness tool) -- see "Engine sound
+presets" below for how to compare the result on real hardware, since
+tone is a listening call this session can't make blind.
+
+### Engine sound presets (`E` key / `sfx_test.py`)
+
+Tone is a real-hardware listening call, so three different synthesis
+recipes (`sfx.ENGINE_PRESETS`) are all built at startup and switchable
+live rather than committing to one guess:
+
+| Preset | Character | Fundamental | Growl layer |
+|---|---|---|---|
+| `LOW RUMBLE` | Low and thick, minimal brightness change | triangle, 7 harmonics | sawtooth, up to 22% mix |
+| `ARCADE ENGINE` | Balanced, classic 90s-arcade-style rev | triangle, 7 harmonics | sawtooth, up to 40% mix |
+| `CHIP ENGINE` | Simpler/"steppier", Virtual-Boy-ish but layered (not a bare buzzer) | square, 4 harmonics | square, up to 38% mix |
+
+Press `E` during the race to cycle presets (`ARCADE ENGINE` is the
+default) -- the currently-playing RPM bucket re-triggers immediately on
+the new preset, and the name flashes on screen (zero-parallax, both
+eyes) for `PRESET_FLASH_MS` (1.2s). The `D` debug overlay's engine line
+also always shows the current preset name and `engine_rpm`.
+
+For offline comparison without running the race:
+
+```
+python main.py --sfx-test          # interactive: A/B/C picks a preset,
+                                    # 1-4 picks idle/low/medium/high --
+                                    # the real RPM-smoothing path runs
+                                    # live, so switching speed also
+                                    # demonstrates the rev-up/rev-down lag
+python sfx_test.py --export-wav <dir>   # writes 12 short WAVs (one per
+                                    # preset x speed level) to <dir> for
+                                    # offline listening -- e.g.
+                                    # debug_engine_arcade_engine_high.wav.
+                                    # Never commit these (see .gitignore's
+                                    # debug_wav/ entry); pure offline
+                                    # synthesis, no display/mixer needed.
+```
 
 ### How the road gets its stereo effect
 
@@ -775,8 +834,13 @@ music.py                 pre-race "SELECT MUSIC" screen + MusicPlayer
                         preview/loop playback, safe load-error handling)
 bgm/                     the three BGM tracks music.py loads (mp3,
                         committed -- original, user-supplied audio)
-sfx.py                   synthesized engine drone + tire screech sound
-                        effects (numpy + pygame.sndarray; no audio files)
+sfx.py                   synthesized engine drone (RPM-driven, three
+                        switchable presets) + tire screech sound effects
+                        (numpy + pygame.sndarray; no audio files)
+sfx_test.py              engine SFX audition tool (`--sfx-test`): live
+                        A/B/C preset + speed-level comparison, and
+                        `--export-wav` for offline WAV previews (never
+                        committed, see .gitignore's debug_wav/ entry)
 input_reset.py            shared Reset input plumbing (Select/Back
                         gamepad hold-to-reset tracking, safe gamepad
                         open) used by both music.py and game.py

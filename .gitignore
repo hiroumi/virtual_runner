@@ -3,3 +3,7 @@ __pycache__/
 .pytest_cache/
 venv/
 .venv/
+
+# sfx_test.py --export-wav output -- debug-only engine SFX previews,
+# never meant to be committed (see README's "Sound effects" section).
+debug_wav/

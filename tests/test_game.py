@@ -14,6 +14,7 @@ import game
 from config import default_config
 from music import BGM_DIR, MusicPlayer, MusicSelectScreen
 from road import HILL_START, SEGMENT_LENGTH, elevation_at
+from sfx import ENGINE_PRESET_ORDER
 
 BGM_ASSETS_PRESENT = BGM_DIR.is_dir() and any(BGM_DIR.glob("*.mp3"))
 
@@ -280,7 +281,7 @@ def test_sfx_stop_when_the_race_finishes():
     g = _make_game()
     g.player.z = g.track_length - 0.01
     g.player.speed = game.MAX_SPEED
-    g.engine_sound.update(1.0, active=True)
+    g.engine_sound.update(1.0, active=True, dt=1 / 60)
     assert g.engine_sound._started is True
     g.update(1 / 60, _keys(UP=True))  # this frame crosses the finish line
     assert g.finished is True
@@ -331,7 +332,7 @@ def test_every_key_binding_executes_without_crashing(monkeypatch):
     g = _make_game()
     keys = [
         pygame.K_LEFTBRACKET, pygame.K_RIGHTBRACKET, pygame.K_z, pygame.K_i,
-        pygame.K_d, pygame.K_f, pygame.K_s, pygame.K_r,
+        pygame.K_d, pygame.K_f, pygame.K_s, pygame.K_r, pygame.K_e,
     ]
     for key in keys:
         event = pygame.event.Event(pygame.KEYDOWN, key=key, mod=0)
@@ -340,6 +341,45 @@ def test_every_key_binding_executes_without_crashing(monkeypatch):
     esc = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0)
     assert g._handle_keydown(esc) is False
     assert g._outcome == "quit"
+    pygame.quit()
+
+
+# -- engine preset cycling (`E` key, 2026-09-04 engine-sound redesign) ----
+
+
+def test_e_key_cycles_to_the_next_engine_preset():
+    g = _make_game()
+    start = g.engine_sound.preset_name
+    g._cycle_engine_preset()
+    assert g.engine_sound.preset_name != start
+    assert g.engine_sound.preset_name in ENGINE_PRESET_ORDER
+    pygame.quit()
+
+
+def test_e_key_wraps_around_after_cycling_through_every_preset():
+    g = _make_game()
+    original = g.engine_sound.preset_name
+    for _ in range(len(ENGINE_PRESET_ORDER)):
+        g._cycle_engine_preset()
+    assert g.engine_sound.preset_name == original
+    pygame.quit()
+
+
+def test_e_key_sets_a_flash_message_that_expires():
+    g = _make_game()
+    g._cycle_engine_preset()
+    assert g._preset_flash_name == g.engine_sound.preset_name
+    assert pygame.time.get_ticks() < g._preset_flash_until_ms
+    g._draw()  # must not crash while the flash is showing
+    pygame.quit()
+
+
+def test_preset_flash_is_included_via_handle_keydown():
+    g = _make_game()
+    start = g.engine_sound.preset_name
+    event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_e, mod=0)
+    assert g._handle_keydown(event) is True
+    assert g.engine_sound.preset_name != start
     pygame.quit()
 
 
