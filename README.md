@@ -556,6 +556,23 @@ shown on the `D` debug overlay whenever either SFX is `unavailable` --
 so the next real-hardware check can read off the exact reason instead of
 another round of guessing.
 
+**2026-09-04, fourth pass: the mixer fix worked -- and then it was too
+loud.** With the real trigger bug fixed, the SFX played for the first
+time at the settings the (mistaken) "still not audible" reports had
+pushed to (`ENGINE_VOLUME`/`ENGINE_SATURATION_DRIVE` at 1.0/5.0,
+`TIRE_SCREECH_VOLUME`/`TIRE_SCREECH_SATURATION_DRIVE` at 1.0/2.4) --
+which, now actually heard, turned out too loud/harsh. In hindsight, the
+first and second "barely audible" reports were likely both describing
+the same not-triggering-at-all bug the third report's debug-overlay
+check finally caught, not an actual loudness shortfall -- so pushing the
+gain to its max in response was chasing the wrong problem. Rolled all
+four constants back to their first-pass values
+(`ENGINE_VOLUME`/`ENGINE_SATURATION_DRIVE`: 0.8/2.5,
+`TIRE_SCREECH_VOLUME`/`TIRE_SCREECH_SATURATION_DRIVE`: 0.8/1.6) as a
+clean, previously-reasoned starting point now that the SFX are confirmed
+to actually play -- this is the first time they're being judged with the
+trigger bug out of the picture, so further tuning from here is expected.
+
 ### How the road gets its stereo effect
 
 Every sprite (trees, traffic cars, the player's own car, HUD) goes

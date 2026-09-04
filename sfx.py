@@ -47,17 +47,20 @@ ENGINE_CROSSFADE_MS = 90        # fade between old/new bucket on a pitch change
 #
 # 2026-09-04 (second pass): after confirming Reset works on real hardware,
 # the user reported the SFX were *still* barely noticeable even with the
-# above fix. Pushed both knobs further -- ENGINE_VOLUME to 1.0 (the max
-# pygame.mixer.Sound.set_volume accepts, no headroom left after this) and
-# ENGINE_SATURATION_DRIVE much higher, which raises the simulated waveform's
-# RMS from 0.525 to 0.808 (peak still only 0.996, so no wraparound
-# clipping/crackle -- see docs/PHASE2_RACE_LOG.md for the full numbers).
-# That's a much more aggressive tanh saturation than before, so expect a
-# noticeably grittier/growlier engine tone, not just a louder version of
-# the old one -- appropriate for "emphasize the engine sound," but flag it
-# if it reads as distorted rather than punchy.
-ENGINE_VOLUME = 1.0
-ENGINE_SATURATION_DRIVE = 5.0    # higher = louder/grittier, see _soft_clip
+# above fix, so both knobs were pushed further (ENGINE_VOLUME to 1.0,
+# ENGINE_SATURATION_DRIVE to 5.0). That turned out to be chasing the wrong
+# problem: real-hardware debugging (see the mixer pre_init / numpy fix and
+# unavailable_reason elsewhere in this file's history) found the engine
+# sound had actually not been *triggering at all* up to that point, on
+# that machine -- so neither the first nor second volume pass had ever
+# really been heard. Once the real bug was fixed and the sound finally
+# played, the "make it louder" settings from these two blind passes turned
+# out to be too much: "ちょっとうるさい" (a bit too loud/harsh). Rolled
+# back to the first pass's numbers as a clean, previously-reasoned
+# starting point now that the sound is confirmed to actually be audible --
+# simulated RMS 0.525, peak 0.954 (see docs/PHASE2_RACE_LOG.md).
+ENGINE_VOLUME = 0.8
+ENGINE_SATURATION_DRIVE = 2.5    # higher = louder/grittier, see _soft_clip
 ENGINE_HARMONICS = ((1, 1.0), (2, 0.5), (3, 0.3), (4, 0.15), (5, 0.08))
 ENGINE_WOBBLE_HZ = 7.0          # slow tremolo for a rougher, less pure-tone feel
 ENGINE_WOBBLE_DEPTH = 0.05
@@ -72,17 +75,15 @@ ENGINE_WOBBLE_DEPTH = 0.05
 TIRE_SCREECH_THRESHOLD = 0.15
 TIRE_SCREECH_SECONDS = 0.35
 TIRE_SCREECH_FADE_MS = 120
-# 2026-09-04 (second pass, see ENGINE_VOLUME's comment): raised again after
-# "still barely audible" feedback -- TIRE_SCREECH_VOLUME to 1.0 (max) and
-# the drive up to 2.4, taking the simulated waveform's RMS from 0.319 to
-# 0.483 (peak still only 0.9, well under the 1.0 ceiling). Kept well below
-# the engine's drive=5.0 on purpose: this is noise-based, not harmonic, so
-# it saturates into flat "static" at a much lower drive than a tonal
-# engine drone does -- 2.4 is meant to be the loudest boost that still
-# reads as a screech rather than a wall of noise, but this is exactly the
-# kind of judgment call that needs an actual ear on real hardware.
-TIRE_SCREECH_VOLUME = 1.0
-TIRE_SCREECH_SATURATION_DRIVE = 2.4  # gentler than the engine's -- too much
+# 2026-09-04 (second pass, see ENGINE_VOLUME's comment): raised again to
+# 1.0/2.4 after "still barely audible" feedback -- which, like the
+# engine's second pass, turned out to be chasing a real trigger bug (the
+# SFX weren't playing at all on that machine yet), not an actual loudness
+# ceiling. Rolled back to the first pass's 0.8/1.6 once the real bug was
+# fixed and the SFX turned out to be too loud/harsh at the maxed-out
+# settings ("ちょっとうるさい"). Simulated RMS 0.319, peak 0.9.
+TIRE_SCREECH_VOLUME = 0.8
+TIRE_SCREECH_SATURATION_DRIVE = 1.6  # gentler than the engine's -- too much
                                       # saturation flattens the noise into
                                       # featureless static instead of a screech
 
