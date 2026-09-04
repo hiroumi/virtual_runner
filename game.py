@@ -128,10 +128,16 @@ CAR_LEAN_SCALE = 11.0     # px the player car sprite nudges toward the turn
 # horizontal center" point sits within its own canvas, so blitting every
 # sprite with that same offset from (cx, cy) is what keeps the tire contact
 # point and body centerline from jumping when the sprite changes.
+#
+# 2026-09-05: switched from the 64x48 placeholder art to production art
+# extracted from a user-supplied sprite sheet (see
+# assets/cars/player/build_from_spritesheet.py), which needed a wider
+# 88x48 canvas -- update this pair together with that script's
+# FINAL_CANVAS_SIZE if the sheet is ever rebuilt at a different size.
 PLAYER_ASSETS_DIR = Path(__file__).resolve().parent / "assets" / "cars" / "player"
 PLAYER_SPRITE_KEYS = ("hard_left", "left", "straight", "right", "hard_right")
-PLAYER_SPRITE_CANVAS_SIZE = (64, 48)
-PLAYER_SPRITE_ANCHOR = (32, 48)  # bottom-center
+PLAYER_SPRITE_CANVAS_SIZE = (88, 48)
+PLAYER_SPRITE_ANCHOR = (44, 48)  # bottom-center
 
 # The single, unified -1..1 "how hard is the player steering right now"
 # value (keyboard + gamepad combined -- see update()) that picks a sprite.

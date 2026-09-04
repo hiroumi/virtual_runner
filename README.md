@@ -826,23 +826,32 @@ that prompted this and how it was verified.
 
 The player's own car (traffic cars are unchanged, still `draw_car()`'s
 flat rectangle -- explicitly out of scope for this pass) is now 5
-original, red/black pixel-art poses instead of a plain rectangle:
-`hard_left`, `left`, `straight`, `right`, `hard_right`
-(`assets/cars/player/player_*.png`, 64x48px, transparent background).
-No image-generation tool was available, so per this project's
+red/black pixel-art poses instead of a plain rectangle: `hard_left`,
+`left`, `straight`, `right`, `hard_right`
+(`assets/cars/player/player_*.png`, 88x48px, transparent background).
+
+No image-generation tool was available at first, so per this project's
 "everything is generated" approach (see the Sound effects section for
 the same philosophy applied to audio),
-`assets/cars/player/generate_placeholder_sprites.py` builds them with
-plain pygame `Surface.fill()` rects on a 16x12 "native pixel" grid (no
-antialiasing at all, and never scaled at runtime, so there's nothing for
-"use nearest-neighbor when scaling" to even apply to) -- rerun it to
-regenerate them. `left`/`hard_left` are `pygame.transform.flip()` of
-`right`/`hard_right`, not separately authored. A rear 3/4 "turn" pose is
-approximated by shearing each row's span sideways, more at the bottom
-(tail) than the top (roof, near the implied pivot) -- a deliberately
-simple stand-in for true 3D rotation, appropriate for small placeholder
-art; whether the lean actually reads as "turning that way" through the
-lenses is a real-hardware call this session can't make.
+`assets/cars/player/generate_placeholder_sprites.py` built an initial
+placeholder set with plain pygame `Surface.fill()` rects on a 16x12
+"native pixel" grid. That script is kept as a fallback/dev tool (still
+used if the real PNGs are ever missing -- see "Missing/broken PNGs"
+below) but the shipped `player_*.png` are no longer its output: the
+user supplied original production art (a 5-pose sprite sheet, red/black
+wedge-shaped sports cars, more detailed than the placeholder) which
+`assets/cars/player/build_from_spritesheet.py` slices apart and
+rebuilds into the 5 files. That script detects each car's region from
+the sheet's real alpha channel, crops it, places all 5 crops onto a
+shared transparent canvas with tire-contact-Y and horizontal-center
+aligned across every pose, then downscales with `pygame.transform.scale()`
+(nearest-neighbor, not `smoothscale()` -- no antialiasing) to the final
+88x48 in-game size. The original sheet is kept at
+`assets/cars/player/source_spritesheet.png` so the script can be rerun
+if the user supplies a revised sheet. `PLAYER_SPRITE_CANVAS_SIZE`/
+`PLAYER_SPRITE_ANCHOR` in `game.py` must match that script's
+`FINAL_CANVAS_SIZE` exactly, or `_load_player_sprites()` rejects the
+whole set (see "Missing/broken PNGs" below).
 
 All 5 share one canvas size and one anchor point
 (`PLAYER_SPRITE_ANCHOR`, bottom-center) in `game.py`, so switching
