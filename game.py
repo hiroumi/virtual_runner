@@ -218,20 +218,23 @@ ENEMY_SPRITE_WEIGHTS = (0.20, 0.20, 0.20, 0.15, 0.15, 0.10)
 ENEMY_SPRITE_CANVAS_SIZE = (75, 58)
 ENEMY_SPRITE_ANCHOR = (37, 58)  # bottom-center
 
-# player_sprites["straight"]'s own opaque width, in px -- the "how wide is
-# the player car, on screen" reference the whole sizing scheme below is
-# calibrated against.
+# Fallback-only reference widths, in px -- used solely when the relevant
+# sprite set failed to load (see Game._player_reference_width_px /
+# _enemy_reference_opaque_width_px below, which is what every sizing
+# calculation in _draw_traffic_car actually reads at runtime). 2026-09-05,
+# 3rd real-hardware feedback round: comparing against these as hardcoded
+# constants -- rather than the *actual rendered* opaque-pixel bbox of the
+# player/boxy_sedan surfaces currently in memory -- was flagged as a risk
+# in itself (a stale derivation could quietly drift from what's really on
+# screen), so Game.__init__ now measures both directly off the loaded
+# Surfaces via _opaque_sprite_width() and stores them per-instance; these
+# module constants only cover the degenerate "sprites failed to load"
+# case, which already falls back to draw_car()'s rectangle and so never
+# actually exercises this number.
 PLAYER_REFERENCE_WIDTH_PX = 71
-
-# boxy_sedan's own opaque width within ENEMY_SPRITE_CANVAS_SIZE -- the
-# "standard" vehicle every ENEMY_SPRITE_TARGET_RATIO_POINTS target below is
-# expressed relative to (other vehicle types automatically come out wider/
-# narrower than this in exact proportion to their own WIDTH_MULT baked in
-# by scripts/build_enemy_sprites.py, since the same sprite_scale is applied
-# to every vehicle's canvas).
 ENEMY_REFERENCE_OPAQUE_WIDTH_PX = 63
 
-# 2026-09-05, two rounds of real-hardware feedback:
+# 2026-09-05, four rounds of real-hardware feedback:
 #   1st: an up-close panel_van looked far bigger than the player car --
 #        _draw_traffic_car was drawing sprites at draw_car()'s old
 #        perspective scale directly (`sw / (ROAD_WIDTH * 3.5)`), which
@@ -244,15 +247,28 @@ ENEMY_REFERENCE_OPAQUE_WIDTH_PX = 63
 #        traffic to a few illegible px -- accurate pinhole-camera
 #        perspective, but poor gameplay legibility (the original spec
 #        explicitly asked that vehicle types stay recognizable at range).
+#   3rd: even after the 2nd round, close-up enemy cars still measured
+#        ~1.2-1.5x the player's own visible width by eye on real
+#        hardware, so the closest-depth target was lowered to 85%.
+#   4th: a live `F7`-cycled A/B tool (100%/90%/80% of the 3rd round's
+#        sizing, applied uniformly across every distance, not just up
+#        close) let the actual choice be made by eye on real hardware
+#        rather than guessed at from a description -- 80% won ("いい感
+#        じです"). The values below are the 3rd round's curve and clamp
+#        each multiplied by that same 0.8, baked in as the new baseline;
+#        the F7 tool itself (ENEMY_SIZE_DEBUG_MULTIPLIERS,
+#        _cycle_enemy_size_debug, its debug-overlay line) has been
+#        removed now that the comparison is settled, per its own
+#        "temporary" framing.
 #
 # ENEMY_SPRITE_TARGET_RATIO_POINTS below replaces the raw perspective
 # scale for the sprite path entirely (draw_car()'s rectangle fallback
 # still uses the plain distance `scale` -- see _draw_traffic_car) with an
 # explicit, hand-tuned curve: for each distance `tz` (world units ahead,
-# project()'s already-floored trans_z), what fraction of
-# PLAYER_REFERENCE_WIDTH_PX should the *standard* vehicle's own opaque
-# width be. Points are (tz, target_ratio), tz strictly ascending and
-# target_ratio strictly descending -- that monotonic pairing is what
+# project()'s already-floored trans_z), what fraction of the player
+# sprite's own on-screen opaque width the *standard* vehicle's own opaque
+# width should be. Points are (tz, target_ratio), tz strictly ascending
+# and target_ratio strictly descending -- that monotonic pairing is what
 # guarantees _enemy_target_ratio's smoothstep interpolation never dips or
 # pops between control points (unlike an earlier version of this curve
 # that multiplied a "boost" onto the raw 1/tz scale: boost and scale
@@ -260,27 +276,27 @@ ENEMY_REFERENCE_OPAQUE_WIDTH_PX = 63
 # point the ratio holds constant, same reasoning as the perspective
 # scale's own 0.35 floor plateauing at long range.
 #
-# Values: ~90m -> ~10%, ~60m -> ~17.5%, ~30m -> ~40%, at the closest
+# Values: ~90m -> ~8%, ~60m -> ~14%, ~30m -> ~32%, at the closest
 # representable depth (project()'s trans_z floor, "same depth as the
-# player") -> exactly 100%, i.e. matching the player's own on-screen
-# width, per the real-hardware ask. Re-tune by editing the ratios
-# directly and re-running the tests in the
-# "Enemy car sizing" section of tests/test_game.py; see
-# docs/PHASE2_RACE_LOG.md's "2026-09-05（16回目）" section for the
-# original derivation.
+# player") -> ~68% -- all = the 3rd round's 10%/17.5%/40%/85% x0.8,
+# confirmed on real hardware via the F7 A/B tool. Re-tune by editing the
+# ratios directly and re-running the tests in the "Enemy car sizing"
+# section of tests/test_game.py; see docs/PHASE2_RACE_LOG.md's
+# "2026-09-05（18回目）" section for this round's derivation ("16回目"/
+# "17回目" for the earlier ones).
 ENEMY_SPRITE_TARGET_RATIO_POINTS = (
-    (3.0, 1.00),    # same-depth calibration point (project()'s trans_z floor)
-    (30.0, 0.40),
-    (60.0, 0.175),
-    (90.0, 0.10),
+    (3.0, 0.68),    # same-depth calibration point (project()'s trans_z floor)
+    (30.0, 0.32),
+    (60.0, 0.14),
+    (90.0, 0.08),
 )
 
 # Hard safety cap, independent of the curve above: no traffic car,
 # regardless of vehicle type or distance, may ever draw wider on screen
 # than this fraction of the player's own width -- catches muscle_car's
-# own +5% WIDTH_MULT (which would otherwise land at ~105% exactly right
-# at the calibration point) and any future curve mistuning.
-ENEMY_SPRITE_MAX_WIDTH_RATIO = 1.05
+# own +5% WIDTH_MULT and any future curve mistuning. Matches the curve's
+# own closest-point target (3rd round's 85% x the 4th round's 0.8).
+ENEMY_SPRITE_MAX_WIDTH_RATIO = 0.68
 
 
 def _smoothstep(edge0: float, edge1: float, x: float) -> float:
@@ -521,6 +537,24 @@ class Game:
         self._enemy_sprite_opaque_widths = {
             key: _opaque_sprite_width(surf) for key, surf in self._enemy_sprites.items()
         }
+        # 2026-09-05, 3rd real-hardware feedback round: the two reference
+        # widths _draw_traffic_car sizes every enemy car against are
+        # measured here, directly off the actual Surfaces this Game loaded
+        # (the same ones _draw_player_car/_draw_traffic_car blit) --
+        # deliberately not the PLAYER_REFERENCE_WIDTH_PX/
+        # ENEMY_REFERENCE_OPAQUE_WIDTH_PX module constants above, which
+        # only cover the fallback (assets failed to load) case. Comparing
+        # against a stale hardcoded number instead of what's actually
+        # rendered was flagged as part of why the previous round's
+        # calibration didn't match what was seen on real hardware.
+        self._player_reference_width_px = (
+            _opaque_sprite_width(self._player_sprites["straight"])
+            if "straight" in self._player_sprites
+            else PLAYER_REFERENCE_WIDTH_PX
+        )
+        self._enemy_reference_opaque_width_px = self._enemy_sprite_opaque_widths.get(
+            "boxy_sedan", ENEMY_REFERENCE_OPAQUE_WIDTH_PX
+        )
         self._road_base_idx = 0
         self._road_clip_before_n: list[float] = []  # crest occlusion, see _draw_road
 
@@ -1074,15 +1108,15 @@ class Game:
         scaled_sprite = None
         dest_x = dest_y = 0.0
         if sprite is not None:
-            target_reference_w = PLAYER_REFERENCE_WIDTH_PX * _enemy_target_ratio(tz)
-            sprite_scale = target_reference_w / ENEMY_REFERENCE_OPAQUE_WIDTH_PX
+            target_reference_w = self._player_reference_width_px * _enemy_target_ratio(tz)
+            sprite_scale = target_reference_w / self._enemy_reference_opaque_width_px
             # Hard cap: whatever the curve above says, this car's own
             # visible width may never exceed ENEMY_SPRITE_MAX_WIDTH_RATIO
             # of the player's on-screen width.
             opaque_w = self._enemy_sprite_opaque_widths.get(car.sprite_id)
             if opaque_w:
                 max_sprite_scale = (
-                    PLAYER_REFERENCE_WIDTH_PX * ENEMY_SPRITE_MAX_WIDTH_RATIO
+                    self._player_reference_width_px * ENEMY_SPRITE_MAX_WIDTH_RATIO
                 ) / opaque_w
                 sprite_scale = min(sprite_scale, max_sprite_scale)
             sprite_w, sprite_h = sprite.get_size()

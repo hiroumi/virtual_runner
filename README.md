@@ -956,29 +956,45 @@ original "vehicle types should stay recognizable at range" requirement
 
 Instead, `ENEMY_SPRITE_TARGET_RATIO_POINTS` defines, directly, what
 fraction of the player's own on-screen width a standard car (boxy_sedan)
-should be at a handful of distances -- `(3.0, 1.00)` (same depth as the
-player), `(30.0, 0.40)`, `(60.0, 0.175)`, `(90.0, 0.10)`, holding flat
-beyond the last point. `_enemy_target_ratio()` interpolates between
-consecutive points with a smoothstep blend; because the points
+should be at a handful of distances -- currently `(3.0, 0.68)` (same
+depth as the player), `(30.0, 0.32)`, `(60.0, 0.14)`, `(90.0, 0.08)`,
+holding flat beyond the last point. `_enemy_target_ratio()` interpolates
+between consecutive points with a smoothstep blend; because the points
 themselves are monotonic (ascending distance, descending ratio), the
 interpolated curve is provably monotonic too -- no local dip/pop as a
 car crosses 90m/60m/30m (an earlier version that multiplied a "boost"
 onto the raw scale instead wasn't: boost and scale individually smooth
 doesn't imply their product is, and a dedicated test caught a small
 non-monotonic wobble around 10-20m from exactly that). A hard
-`ENEMY_SPRITE_MAX_WIDTH_RATIO=1.05` cap, evaluated against each
+`ENEMY_SPRITE_MAX_WIDTH_RATIO=0.68` cap, evaluated against each
 vehicle's own opaque pixel width (precomputed once per sprite at load
 time, not from raw canvas width, since canvas width is uniform across
 all 6 but each car's own visible footprint within it isn't), backs this
 up regardless of what the curve computes -- catches `muscle_car`'s own
 +5% width sitting right at that boundary at the closest point, and any
-future curve mistuning. Hill-crest occlusion and both eyes sharing one
-scaled surface (computed once outside the per-eye draw closure) work
-exactly like before. Collision detection was untouched by any of this,
-since it only ever compared `player.z`/`car.z`/`player.x`/`car.x` in
-world coordinates, never sprite geometry. Missing/broken PNGs degrade to
-the original `draw_car()` rectangle for every traffic car, same fallback
-philosophy as everywhere else in this project.
+future curve mistuning. Both the player-width reference and each
+vehicle's own opaque width are measured off the actual loaded Surfaces
+at `Game.__init__` time (`self._player_reference_width_px`/
+`self._enemy_reference_opaque_width_px`), not hardcoded constants --
+real-hardware feedback specifically flagged comparing against a stale
+number instead of what's actually on screen as a risk.
+
+These target-ratio values went through several real-hardware rounds:
+first calibrated so the closest point matched the player's width
+exactly (100%), which still read ~1.2-1.5x too big by eye; lowered to
+85%; then A/B-compared live on hardware via a temporary `F7`-cycled
+debug tool (100%/90%/80% of that 85%, applied uniformly across every
+distance, flashing "ENEMY SIZE: N%" on toggle) -- 80% won, landing the
+closest point at 85% x 0.8 ≈ 68%, with the far/mid points scaled by the
+same 0.8. That debug tool has since been removed (it was explicitly
+temporary); the constants above are the settled result. Hill-crest
+occlusion and both eyes sharing one scaled surface (computed once
+outside the per-eye draw closure) work exactly like before. Collision
+detection was untouched by any of this, since it only ever compared
+`player.z`/`car.z`/`player.x`/`car.x` in world coordinates, never sprite
+geometry. Missing/broken PNGs degrade to the original `draw_car()`
+rectangle for every traffic car, same fallback philosophy as everywhere
+else in this project.
 
 ### Road elevation: hills, a crest, and a valley
 

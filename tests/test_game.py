@@ -1281,7 +1281,11 @@ def _enemy_displayed_width(g, world_z: float, sprite_id: str) -> float:
     real method uses (uniform scaling preserves each sprite's own
     opaque/canvas ratio, so opaque_px * sprite_scale is exactly what
     _draw_traffic_car's canvas-wide pygame.transform.scale produces),
-    kept here only for test assertions."""
+    kept here only for test assertions. Deliberately reads the same
+    per-instance g._player_reference_width_px/_enemy_reference_opaque_width_px
+    _draw_traffic_car itself uses (measured off the actually-loaded
+    Surfaces), not a hardcoded module constant -- see their own
+    docstring in Game.__init__ for why that distinction matters."""
     cam_x = g._road_center_x()
     width, height = g.renderer.left_surface.get_size()
     world_x = game.world_x_at(g.segments, world_z) + 0.0
@@ -1289,11 +1293,11 @@ def _enemy_displayed_width(g, world_z: float, sprite_id: str) -> float:
     _, _, _, tz = game.project(
         world_x, world_y, world_z, cam_x, g.cam_elevation, g.player.z, width, height
     )
-    target_reference_w = game.PLAYER_REFERENCE_WIDTH_PX * game._enemy_target_ratio(tz)
-    sprite_scale = target_reference_w / game.ENEMY_REFERENCE_OPAQUE_WIDTH_PX
+    target_reference_w = g._player_reference_width_px * game._enemy_target_ratio(tz)
+    sprite_scale = target_reference_w / g._enemy_reference_opaque_width_px
     opaque_w = g._enemy_sprite_opaque_widths[sprite_id]
     max_sprite_scale = (
-        game.PLAYER_REFERENCE_WIDTH_PX * game.ENEMY_SPRITE_MAX_WIDTH_RATIO
+        g._player_reference_width_px * game.ENEMY_SPRITE_MAX_WIDTH_RATIO
     ) / opaque_w
     sprite_scale = min(sprite_scale, max_sprite_scale)
     return opaque_w * sprite_scale
@@ -1320,39 +1324,44 @@ def test_enemy_car_widths_stay_within_5_percent_of_each_other_at_a_shared_distan
     not (ENEMY_SPRITE_ASSETS_PRESENT and PLAYER_SPRITE_ASSETS_PRESENT),
     reason="player/enemy sprite PNGs not present",
 )
-def test_enemy_car_width_matches_player_width_within_5_percent_at_closest_approach():
-    # "敵車がプレイヤー車と同じ奥行きに来たと仮定した場合...プレイヤー車と
-    # おおむね同じ大きさに見えるよう...目安は±5%以内" -- world_z == player.z is
-    # exactly where project()'s trans_z floors at SEGMENT_LENGTH, i.e. the
-    # closest a traffic car's depth can be represented; every vehicle type
-    # (including panel_van) must land within +-5% of the player's own
-    # on-screen width there, not just the "standard" boxy_sedan.
+def test_enemy_car_width_is_about_68_percent_of_player_width_at_closest_approach():
+    # 4th real-hardware feedback round: a live F7 A/B tool (100%/90%/80% of
+    # the 3rd round's 85%-target sizing, applied uniformly across every
+    # distance) let the final choice be picked by eye on real hardware --
+    # 80% won ("いい感じです"), landing the closest-approach target at
+    # 85% * 0.8 ≈ 68%. world_z == player.z is exactly where project()'s
+    # trans_z floors at SEGMENT_LENGTH, i.e. the closest a traffic car's
+    # depth can be represented; every vehicle type (including panel_van
+    # and muscle_car) must land close to that target there, not just
+    # boxy_sedan.
     g = _make_game()
     player_w = _player_straight_visual_width(g)
     for key in game.ENEMY_SPRITE_KEYS:
         w = _enemy_displayed_width(g, g.player.z, key)
-        assert player_w * 0.95 <= w <= player_w * 1.05, (key, w, player_w)
+        ratio = w / player_w
+        assert 0.63 <= ratio <= 0.70, (key, ratio)
     pygame.quit()
 
 
 @pytest.mark.skipif(not ENEMY_SPRITE_ASSETS_PRESENT, reason="enemy sprite PNGs not present")
 def test_panel_van_is_not_noticeably_bigger_than_the_player_car_up_close():
     # Coarser sanity check specifically for the vehicle that was reported
-    # oversized -- even with a looser tolerance than the ±5% check above,
-    # panel_van must not read as "clearly bigger" than the player.
+    # oversized -- panel_van must not read as "as big as or bigger than"
+    # the player, let alone clearly bigger, now that the closest-approach
+    # target itself is below 1.0.
     g = _make_game()
     player_w = _player_straight_visual_width(g)
     van_w = _enemy_displayed_width(g, g.player.z, "panel_van")
-    assert van_w <= player_w * 1.10
+    assert van_w < player_w
     pygame.quit()
 
 
 @pytest.mark.skipif(not ENEMY_SPRITE_ASSETS_PRESENT, reason="enemy sprite PNGs not present")
-def test_no_enemy_car_ever_exceeds_the_105_percent_width_clamp():
-    # ENEMY_SPRITE_MAX_WIDTH_RATIO=1.05 must hold for every vehicle type
-    # at every distance, not just at the calibration point -- covers
-    # muscle_car's own +5% WIDTH_MULT compounding with the target-ratio
-    # curve anywhere it might overshoot.
+def test_no_enemy_car_ever_exceeds_the_max_width_clamp():
+    # ENEMY_SPRITE_MAX_WIDTH_RATIO (0.68, 4th round) must hold for every
+    # vehicle type at every distance, not just at the calibration point --
+    # covers muscle_car's own +5% WIDTH_MULT compounding with the
+    # target-ratio curve anywhere it might overshoot.
     g = _make_game()
     player_w = _player_straight_visual_width(g)
     for key in game.ENEMY_SPRITE_KEYS:
@@ -1364,13 +1373,13 @@ def test_no_enemy_car_ever_exceeds_the_105_percent_width_clamp():
 
 @pytest.mark.skipif(not ENEMY_SPRITE_ASSETS_PRESENT, reason="enemy sprite PNGs not present")
 def test_enemy_car_reaches_the_requested_legibility_targets_at_90_60_30m():
-    # 2nd real-hardware feedback round: pure 1/distance perspective made
-    # far/mid traffic illegible (a few px at 60-90m); these targets were
-    # given explicitly as "game legibility over physical accuracy":
-    # ~90m -> 8-12%, ~60m -> 15-20%, ~30m -> 35-45% of the player's width.
+    # 2nd round set the legibility shape (2nd round's 10%/17.5%/40% at
+    # 90/60/30m); the 4th round's real-hardware-confirmed 0.8 multiplier
+    # was applied uniformly across the whole curve, landing these at
+    # ~8%/~14%/~32%.
     g = _make_game()
     player_w = _player_straight_visual_width(g)
-    for tz, lo, hi in [(90, 0.08, 0.12), (60, 0.15, 0.20), (30, 0.35, 0.45)]:
+    for tz, lo, hi in [(90, 0.06, 0.10), (60, 0.12, 0.16), (30, 0.28, 0.36)]:
         w = _enemy_displayed_width(g, g.player.z + tz, "boxy_sedan")
         ratio = w / player_w
         assert lo <= ratio <= hi, (tz, ratio)
@@ -1394,3 +1403,4 @@ def test_enemy_car_display_width_never_dips_as_it_gets_closer():
                 assert w >= prev_w - 1e-6, (key, tz, w, prev_w)
             prev_w = w
     pygame.quit()
+
