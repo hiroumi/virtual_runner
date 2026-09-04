@@ -657,6 +657,43 @@ def test_gamepad_b_button_brakes_like_down_arrow():
     pygame.quit()
 
 
+def test_gamepad_dpad_up_also_accelerates():
+    # 2026-09-05: added as an alternative to A, not a replacement.
+    g = _make_game()
+    gamepad = FakeController(buttons={pygame.CONTROLLER_BUTTON_DPAD_UP})
+    for _ in range(120):
+        g.update(1 / 60, _keys(), gamepad)
+    assert g.player.speed > 0.0
+    pygame.quit()
+
+
+def test_gamepad_dpad_down_also_brakes():
+    g = _make_game()
+    g.player.speed = game.MAX_SPEED
+    gamepad = FakeController(buttons={pygame.CONTROLLER_BUTTON_DPAD_DOWN})
+    g.update(1 / 60, _keys(), gamepad)
+    assert g.player.speed < game.MAX_SPEED
+    pygame.quit()
+
+
+def test_gamepad_left_stick_up_also_accelerates():
+    g = _make_game()
+    gamepad = FakeController(axes={pygame.CONTROLLER_AXIS_LEFTY: -32768})
+    for _ in range(120):
+        g.update(1 / 60, _keys(), gamepad)
+    assert g.player.speed > 0.0
+    pygame.quit()
+
+
+def test_gamepad_left_stick_down_also_brakes():
+    g = _make_game()
+    g.player.speed = game.MAX_SPEED
+    gamepad = FakeController(axes={pygame.CONTROLLER_AXIS_LEFTY: 32767})
+    g.update(1 / 60, _keys(), gamepad)
+    assert g.player.speed < game.MAX_SPEED
+    pygame.quit()
+
+
 def test_gamepad_dpad_steers_the_car():
     g = _make_game()
     g.player.speed = game.MAX_SPEED

@@ -222,7 +222,12 @@ TIRE_SCREECH_PRESETS: dict[str, TireScreechPreset] = {
         tone2_ratio=1.5, tone2_weight=0.25,
         attack_s=0.02, release_s=0.08,
         saturation_drive=1.6,
-        volume=0.8,
+        # 2026-09-05: confirmed as the closest-to-imagined preset
+        # ("clasicが一番近いですね") -- waveform/drive untouched, only
+        # asked to be "a little smaller." 0.8 -> 0.6 (effective RMS
+        # ~0.32 -> ~0.24), the same conservative first cut the engine
+        # got, landing it in line with ARCADE ENGINE's confirmed level.
+        volume=0.6,
     ),
     "GRIP SLIDE": TireScreechPreset(
         # Noise-dominant and pitched much lower -- reads more like rubber

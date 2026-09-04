@@ -448,10 +448,17 @@ software for this to work.
 |---|---|---|
 | Left stick left/right | Switch track (debounced, see below) | Analog steering |
 | D-pad left/right | Switch track | Digital steering |
-| `A` | Confirm and start | Accelerate |
-| `B` | -- | Brake |
+| `A`, D-pad up, or stick up | Confirm and start (`A` only) | Accelerate |
+| `B`, D-pad down, or stick down | -- | Brake |
 | `Start` | Confirm and start | Restart (no pause feature exists to map this to; closest existing "start (again)" action, same as `R`) |
 | `Back`/`View` held ~1s | Reset | Reset |
+
+D-pad up/down and the left stick pushed up/down (2026-09-05, added as
+*alternatives* to A/B, not replacements -- `read_accel`/`read_brake` in
+`gamepad.py`) accelerate/brake exactly like A/B do; only `A` confirms a
+track on SELECT MUSIC (up/down there are track-switching, not
+accelerate/brake -- there's no race yet to accelerate in). Stick up/down
+uses the same deadzone as steering (`STEER_DEADZONE`).
 
 The left stick has a deadzone (`gamepad.STEER_DEADZONE`, default `0.18`,
 in the `0.15`-`0.20` range asked for) so resting near center on a worn
@@ -751,8 +758,7 @@ at startup and switchable live:
 | `GRIP SLIDE` | Noise-dominant, pitched much lower -- rubber grinding on asphalt rather than a high squeal | 0.75 | 900 Hz |
 | `ARCADE CHIRP` | Short, bright, tone-dominant -- a quick "eeee!" chirp | 0.3 | 2600 Hz |
 
-Press `T` during the race to cycle presets (`CLASSIC SQUEAL` is the
-default, unevaluated as of this writing) -- the name flashes on screen
+Press `T` during the race to cycle presets -- the name flashes on screen
 the same way `E`'s does. Unlike the engine's `set_preset`, this doesn't
 force an immediate re-trigger: a screech is a short one-shot clip, not a
 sustained loop, so a clip already mid-playback just finishes naturally
@@ -761,6 +767,13 @@ interactive screen (`python main.py --sfx-test`) adds `X`/`Y`/`Z` to
 pick a tire preset and `Space` to play it on demand; `--export-wav` now
 also writes `debug_tire_<preset>.wav` (3 files) alongside the 12 engine
 WAVs.
+
+**2026-09-05: `CLASSIC SQUEAL` confirmed** ("clasicが一番近いですね") as
+the default and only preset actually in use, then asked to be "a little
+smaller" -- its `volume` moved `0.8 -> 0.6` (effective RMS ~0.32 ->
+~0.24), the same conservative first cut the engine got, landing it in
+line with `ARCADE ENGINE`'s confirmed level. Waveform/drive untouched.
+`GRIP SLIDE`/`ARCADE CHIRP` remain available via `T` but are unevaluated.
 
 ### How the road gets its stereo effect
 

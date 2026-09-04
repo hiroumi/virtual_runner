@@ -214,14 +214,28 @@ def read_steer(controller, deadzone: float = STEER_DEADZONE) -> float:
     return max(-1.0, min(1.0, stick + dpad))
 
 
-def read_accel(controller) -> bool:
-    """A button held, for the race's accelerate."""
-    return _button(controller, pygame.CONTROLLER_BUTTON_A)
+def read_accel(controller, deadzone: float = STEER_DEADZONE) -> bool:
+    """True if any of A, D-pad up, or the left stick pushed up should
+    accelerate -- 2026-09-05: A alone was the only way at first; D-pad/
+    stick up were added as alternatives (not replacements) per
+    feedback. SDL's Y axis follows screen convention (up is negative),
+    same deadzone as steering since it's the same "ignore center drift"
+    concern."""
+    if _button(controller, pygame.CONTROLLER_BUTTON_A):
+        return True
+    if _button(controller, pygame.CONTROLLER_BUTTON_DPAD_UP):
+        return True
+    return _axis(controller, pygame.CONTROLLER_AXIS_LEFTY) < -deadzone
 
 
-def read_brake(controller) -> bool:
-    """B button held, for the race's brake."""
-    return _button(controller, pygame.CONTROLLER_BUTTON_B)
+def read_brake(controller, deadzone: float = STEER_DEADZONE) -> bool:
+    """True if any of B, D-pad down, or the left stick pushed down
+    should brake -- same rationale as read_accel."""
+    if _button(controller, pygame.CONTROLLER_BUTTON_B):
+        return True
+    if _button(controller, pygame.CONTROLLER_BUTTON_DPAD_DOWN):
+        return True
+    return _axis(controller, pygame.CONTROLLER_AXIS_LEFTY) > deadzone
 
 
 class MenuStickNav:

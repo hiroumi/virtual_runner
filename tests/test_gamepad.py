@@ -182,6 +182,34 @@ def test_read_accel_and_brake_false_with_no_controller():
     assert read_brake(None) is False
 
 
+def test_read_accel_and_brake_via_dpad_up_down():
+    # 2026-09-05: added as alternatives to A/B, not replacements.
+    up = _FakeController(buttons={pygame.CONTROLLER_BUTTON_DPAD_UP})
+    assert read_accel(up) is True
+    assert read_brake(up) is False
+
+    down = _FakeController(buttons={pygame.CONTROLLER_BUTTON_DPAD_DOWN})
+    assert read_brake(down) is True
+    assert read_accel(down) is False
+
+
+def test_read_accel_and_brake_via_left_stick_up_down():
+    # SDL's Y axis follows screen convention: up is negative.
+    up = _FakeController(axes={pygame.CONTROLLER_AXIS_LEFTY: -20000})
+    assert read_accel(up) is True
+    assert read_brake(up) is False
+
+    down = _FakeController(axes={pygame.CONTROLLER_AXIS_LEFTY: 20000})
+    assert read_brake(down) is True
+    assert read_accel(down) is False
+
+
+def test_read_accel_and_brake_stick_within_deadzone_do_not_fire():
+    drifting = _FakeController(axes={pygame.CONTROLLER_AXIS_LEFTY: 3000})  # well under the deadzone
+    assert read_accel(drifting) is False
+    assert read_brake(drifting) is False
+
+
 # -- MenuStickNav (debounced menu navigation, 2026-09-04) --------------------
 
 
