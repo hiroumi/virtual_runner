@@ -1,4 +1,5 @@
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -20,6 +21,9 @@ BGM_ASSETS_PRESENT = BGM_DIR.is_dir() and any(BGM_DIR.glob("*.mp3"))
 PLAYER_SPRITE_ASSETS_PRESENT = all(
     (game.PLAYER_ASSETS_DIR / f"player_{key}.png").is_file() for key in game.PLAYER_SPRITE_KEYS
 )
+ENEMY_SPRITE_ASSETS_PRESENT = all(
+    (game.ENEMY_ASSETS_DIR / f"{key}.png").is_file() for key in game.ENEMY_SPRITE_KEYS
+)
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +38,17 @@ def _reset_player_sprite_cache():
     yield
     game._player_sprites_cache["loaded"] = False
     game._player_sprites_cache["sprites"] = {}
+
+
+@pytest.fixture(autouse=True)
+def _reset_enemy_sprite_cache():
+    # Same reasoning as _reset_player_sprite_cache above, for
+    # game._load_enemy_sprites()'s module-level cache.
+    game._enemy_sprites_cache["loaded"] = False
+    game._enemy_sprites_cache["sprites"] = {}
+    yield
+    game._enemy_sprites_cache["loaded"] = False
+    game._enemy_sprites_cache["sprites"] = {}
 
 
 class FakeKeys(dict):
@@ -1034,4 +1049,210 @@ def test_debug_overlay_shows_steering_value_and_sprite_name():
     _settle(g, keys=_keys(RIGHT=True))
     g.show_debug = True
     g._draw()  # must not crash while the overlay is showing
+    pygame.quit()
+
+
+# -- Enemy/traffic car sprites (2026-09-05) ----------------------------------
+
+# Captured from _build_traffic() before sprite_id existed (random.Random(42),
+# same start/end/step/lane_centers) -- this is the "before" half of the
+# "same seed -> identical lane/position/speed" regression the sprite_id
+# change must never break, since sprite_id assignment now runs from its own
+# separate Random(ENEMY_SPRITE_RNG_SEED) *after* this exact sequence.
+_TRAFFIC_LAYOUT_BEFORE_SPRITES = [
+    (360.0, 0.666667, 28.0), (630.0, -0.666667, 28.0), (900.0, -0.666667, 28.0),
+    (1170.0, 0.666667, 28.0), (1440.0, 0.0, 28.0), (1710.0, -0.666667, 28.0),
+    (1980.0, -0.666667, 28.0), (2250.0, -0.666667, 28.0), (2520.0, 0.666667, 28.0),
+    (2790.0, -0.666667, 28.0), (3060.0, 0.666667, 28.0), (3330.0, 0.666667, 28.0),
+    (3600.0, 0.666667, 28.0), (3870.0, -0.666667, 28.0), (4140.0, 0.666667, 28.0),
+    (4410.0, 0.0, 28.0), (4680.0, -0.666667, 28.0), (4950.0, -0.666667, 28.0),
+    (5220.0, -0.666667, 28.0), (5490.0, -0.666667, 28.0), (5760.0, -0.666667, 28.0),
+    (6030.0, 0.666667, 28.0),
+]
+
+
+def test_traffic_lane_position_and_speed_are_unchanged_by_sprite_id_assignment():
+    g = _make_game()
+    actual = [(round(c.z, 4), round(c.x, 6), round(c.speed, 4)) for c in g.traffic]
+    assert actual == _TRAFFIC_LAYOUT_BEFORE_SPRITES
+    pygame.quit()
+
+
+def test_enemy_sprite_rng_is_independent_of_the_lane_rng():
+    # Direct proof, not just an outcome match: draining extra values from
+    # random.Random(42) right after building traffic (as _build_traffic's
+    # own lane rng would if sprite_id shared it) must NOT match what the
+    # real, separate ENEMY_SPRITE_RNG_SEED stream produces -- i.e. these
+    # really are two unrelated streams, not one that happens to agree here.
+    g = _make_game()
+    actual_ids = [c.sprite_id for c in g.traffic]
+
+    lane_centers = [
+        (2 * i - (game.LANE_COUNT - 1)) / game.LANE_COUNT for i in range(game.LANE_COUNT)
+    ]
+    lane_rng = random.Random(42)
+    for _ in g.traffic:
+        lane_rng.choice(lane_centers)  # replays exactly what _build_traffic already consumed
+    if_shared_ids = [
+        lane_rng.choices(game.ENEMY_SPRITE_KEYS, weights=game.ENEMY_SPRITE_WEIGHTS)[0]
+        for _ in g.traffic
+    ]
+    assert actual_ids != if_shared_ids
+
+    sprite_rng = random.Random(game.ENEMY_SPRITE_RNG_SEED)
+    expected_ids = [
+        sprite_rng.choices(game.ENEMY_SPRITE_KEYS, weights=game.ENEMY_SPRITE_WEIGHTS)[0]
+        for _ in g.traffic
+    ]
+    assert actual_ids == expected_ids
+    pygame.quit()
+
+
+def test_sprite_id_assigned_once_and_stable_across_frames():
+    g = _make_game()
+    ids_before = [c.sprite_id for c in g.traffic]
+    assert all(sid in game.ENEMY_SPRITE_KEYS for sid in ids_before)
+    for _ in range(30):
+        g.update(1 / 60, _keys(UP=True))
+    ids_after = [c.sprite_id for c in g.traffic]
+    assert ids_after == ids_before
+    pygame.quit()
+
+
+def test_restart_keeps_the_same_sprite_id_sequence():
+    # _build_traffic() reruns on Restart, but with the same two fixed
+    # seeds every time -- so the resulting sprite_id sequence should be
+    # identical race to race, matching the existing "deterministic traffic
+    # layout" property (_build_traffic uses random.Random(42), not
+    # unseeded random).
+    g = _make_game()
+    ids_before = [c.sprite_id for c in g.traffic]
+    g._restart()
+    ids_after = [c.sprite_id for c in g.traffic]
+    assert ids_after == ids_before
+    pygame.quit()
+
+
+@pytest.mark.skipif(not ENEMY_SPRITE_ASSETS_PRESENT, reason="enemy sprite PNGs not present")
+def test_all_six_enemy_sprites_are_rgba_with_real_transparency():
+    g = _make_game()
+    sprites = g._enemy_sprites
+    assert set(sprites.keys()) == set(game.ENEMY_SPRITE_KEYS)
+    for key, surf in sprites.items():
+        assert surf.get_bitsize() == 32 and surf.get_flags() & pygame.SRCALPHA
+        alpha = pygame.surfarray.pixels_alpha(surf)
+        assert alpha.min() == 0, f"{key}: no fully-transparent pixels"
+        assert alpha.max() == 255, f"{key}: no fully-opaque pixels"
+    pygame.quit()
+
+
+@pytest.mark.skipif(not ENEMY_SPRITE_ASSETS_PRESENT, reason="enemy sprite PNGs not present")
+def test_enemy_sprites_share_one_canvas_size_and_ground_anchor():
+    g = _make_game()
+    sprites = g._enemy_sprites
+    sizes = {surf.get_size() for surf in sprites.values()}
+    assert sizes == {game.ENEMY_SPRITE_CANVAS_SIZE}  # one shared canvas, per the spec
+
+    anchor_x, anchor_y = game.ENEMY_SPRITE_ANCHOR
+    bottom_rows = {}
+    for key, surf in sprites.items():
+        alpha = pygame.surfarray.pixels_alpha(surf)
+        opaque_rows = [y for y in range(surf.get_height()) if (alpha[:, y] > 0).any()]
+        assert opaque_rows, f"{key}: sprite is fully transparent"
+        bottom_rows[key] = opaque_rows[-1]
+        assert opaque_rows[-1] < anchor_y  # tire pixels sit above the anchor row, never past it
+
+    # All 6 vehicles' actual tire-contact row must land within a couple px
+    # of each other despite differing footprints (van/pickup vs. sedans) --
+    # that's what "接地アンカーが車種間で揃う" means in practice.
+    assert max(bottom_rows.values()) - min(bottom_rows.values()) <= 3
+
+
+@pytest.mark.skipif(not ENEMY_SPRITE_ASSETS_PRESENT, reason="enemy sprite PNGs not present")
+def test_enemy_sprites_load_successfully_and_draw_without_crashing():
+    g = _make_game()
+    assert g._enemy_sprites  # non-empty -- assets loaded, not the fallback
+    g.player.z = g.traffic[0].z - 50.0  # bring a car within DRAW_DISTANCE
+    g._draw()  # must not crash
+    pygame.quit()
+
+
+def test_missing_enemy_sprite_files_falls_back_to_the_placeholder_rect(monkeypatch, tmp_path):
+    monkeypatch.setattr(game, "ENEMY_ASSETS_DIR", tmp_path)  # empty dir, no PNGs there
+    g = _make_game()
+    assert g._enemy_sprites == {}
+    g.player.z = g.traffic[0].z - 50.0  # bring a car within DRAW_DISTANCE
+    g._draw()  # must not crash -- falls back to draw_car() for every traffic car
+    pygame.quit()
+
+
+def test_enemy_sprite_cache_is_shared_across_game_instances():
+    g1 = _make_game()
+    assert game._enemy_sprites_cache["loaded"] is True
+    g2 = game.Game(default_config(), screen=g1.screen, renderer=g1.renderer)
+    assert g2._enemy_sprites is g1._enemy_sprites  # same dict object, not re-loaded
+    pygame.quit()
+
+
+def test_draw_does_not_change_traffic_sprite_ids():
+    # renderer.draw_world calls _draw_traffic_car's draw() once per eye --
+    # both must render the same vehicle at the same size (StereoRenderer
+    # only applies horizontal disparity), so drawing must never reassign
+    # sprite_id.
+    g = _make_game()
+    g.player.z = g.traffic[0].z - 50.0  # bring a car within DRAW_DISTANCE
+    ids_before = [c.sprite_id for c in g.traffic]
+    g._draw()  # draws both eyes
+    ids_after = [c.sprite_id for c in g.traffic]
+    assert ids_after == ids_before
+    pygame.quit()
+
+
+@pytest.mark.skipif(not ENEMY_SPRITE_ASSETS_PRESENT, reason="enemy sprite PNGs not present")
+def test_traffic_sprite_display_size_grows_monotonically_as_it_gets_closer():
+    g = _make_game()
+    car = g.traffic[0]
+    sprite = g._enemy_sprites[car.sprite_id]
+    cam_x = g._road_center_x()
+    width, height = g.renderer.left_surface.get_size()
+    prev_scaled_w = 0
+    for z in range(int(car.z), int(g.player.z) - 1, -400):
+        world_x = game.world_x_at(g.segments, z) + car.x * game.ROAD_WIDTH
+        world_y = game.elevation_at(g.segments, z)
+        sx, sy, sw, tz = game.project(
+            world_x, world_y, z, cam_x, g.cam_elevation, g.player.z, width, height
+        )
+        scale = max(0.35, sw / (game.ROAD_WIDTH * 3.5))
+        scaled_w = max(1, round(sprite.get_width() * scale))
+        assert scaled_w >= prev_scaled_w
+        prev_scaled_w = scaled_w
+    pygame.quit()
+
+
+def test_enemy_sprite_scaling_uses_nearest_neighbor_not_smoothscale(monkeypatch):
+    # pygame.transform.smoothscale antialiases (blurs pixel-art edges);
+    # scale() doesn't -- the spec explicitly requires the latter.
+    calls = {"smoothscale": 0, "scale": 0}
+    real_scale = pygame.transform.scale
+
+    def counting_scale(surf, size):
+        calls["scale"] += 1
+        return real_scale(surf, size)
+
+    def failing_smoothscale(surf, size):
+        calls["smoothscale"] += 1
+        raise AssertionError("pygame.transform.smoothscale must not be used for enemy sprites")
+
+    monkeypatch.setattr(pygame.transform, "scale", counting_scale)
+    monkeypatch.setattr(pygame.transform, "smoothscale", failing_smoothscale)
+
+    g = _make_game()
+    # Bring the nearest traffic car within DRAW_DISTANCE so it's actually
+    # drawn -- at the default player.z=0 it's still off in the distance
+    # and _draw_traffic_car returns before ever touching pygame.transform.
+    g.player.z = g.traffic[0].z - 50.0
+    if g._enemy_sprites:
+        g._draw()
+        assert calls["scale"] > 0
+    assert calls["smoothscale"] == 0
     pygame.quit()

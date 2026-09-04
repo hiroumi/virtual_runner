@@ -824,9 +824,10 @@ that prompted this and how it was verified.
 
 ### Player car sprites (2026-09-05)
 
-The player's own car (traffic cars are unchanged, still `draw_car()`'s
-flat rectangle -- explicitly out of scope for this pass) is now 5
-red/black pixel-art poses instead of a plain rectangle: `hard_left`,
+The player's own car (traffic cars were still `draw_car()`'s flat
+rectangle at this point -- explicitly out of scope for this pass, see
+"Enemy/traffic car sprites" below for their later, separate update) is
+now 5 red/black pixel-art poses instead of a plain rectangle: `hard_left`,
 `left`, `straight`, `right`, `hard_right`
 (`assets/cars/player/player_*.png`, 88x48px, transparent background).
 
@@ -887,6 +888,67 @@ category boundaries themselves have a small hysteresis margin
 toggle the sprite every frame. The `D` debug overlay shows the live
 `steering` value and selected pose name, specifically so this can be
 checked against the actual left/right direction on real hardware.
+
+### Enemy/traffic car sprites (2026-09-05)
+
+Traffic cars (previously the same flat `draw_car()` rectangle as the
+player) are now 6 red/black pixel-art vehicles: `sports_coupe`,
+`boxy_sedan`, `compact_hatchback`, `panel_van`, `muscle_car`,
+`pickup_truck` (`assets/cars/enemies/*.png`, one shared 68x56px
+transparent canvas). Built by `scripts/build_enemy_sprites.py` from a
+user-supplied 2-row x 3-col sheet (`assets/source/enemy_cars_sheet.png`).
+That sheet's alpha was fully opaque -- the checkerboard "transparency"
+was baked into RGB, same issue as the player sheet -- so a naive
+brightness threshold would have erased windows/taillights/highlights
+along with the real background. Instead the script **flood-fills from
+the sheet's outer border** over pixels that are both bright and
+low-saturation (checkerboard-colored); only pixels actually reachable
+from the edge through more checkerboard get alpha=0, so an interior
+bright patch not connected to the border survives untouched.
+
+Unlike the player's 5 poses (near-identical footprints, sized to match
+each other for flicker-free switching), the spec here explicitly asks
+that the van/pickup keep their real size advantage over the sedans --
+so instead of independently fitting each car to its own box, the
+script picks **one shared scale factor** (sized so the single largest
+source car fits the target box) and applies it to all 6, then places
+each scaled crop on one common transparent canvas with its own
+bounding-box bottom-center (tire contact) at one fixed anchor point.
+The result: every vehicle's ground-contact point lands at the same
+pixel regardless of shape, while a panel_van still reads as visibly
+bigger than a compact_hatchback. `pygame.transform.scale()` (not
+`smoothscale()`) throughout, matching the "nearest-neighbor, no
+antialiasing" requirement.
+
+**Vehicle assignment**: each `TrafficCar` gets a `sprite_id` once, at
+`_build_traffic()` construction time, from a weighted draw
+(`sports_coupe`/`boxy_sedan`/`compact_hatchback` 20% each,
+`panel_van`/`muscle_car` 15% each, `pickup_truck` 10%) -- fixed for
+that car's whole lifetime, never reselected per frame or per eye. The
+one constraint that shaped the implementation: **that draw must never
+touch `_build_traffic`'s existing `random.Random(42)`** (the one that
+already decides lane/position/speed) -- consuming even one extra value
+from it would shift every lane pick after that point and silently
+change the whole traffic layout other tests/replays depend on. So
+`sprite_id` assignment uses its own separate `random.Random`
+(`ENEMY_SPRITE_RNG_SEED`), run as a second pass only after the existing
+lane/position/speed loop has fully finished. A dedicated test
+(`test_enemy_sprite_rng_is_independent_of_the_lane_rng`) proves the two
+streams are actually independent, not just coincidentally matching, and
+another (`test_traffic_lane_position_and_speed_are_unchanged_by_sprite_id_assignment`)
+locks in that the pre-existing 22-car (z, x, speed) layout is
+byte-for-byte unchanged from before `sprite_id` existed.
+
+Display size still comes entirely from the existing distance-based
+`scale = max(0.35, sw / (ROAD_WIDTH * 3.5))` that `draw_car()` always
+used -- only *what* gets drawn at that scale changed, so near/far
+growth, hill-crest occlusion, and both eyes sharing one scaled surface
+(computed once outside the per-eye draw closure) all work exactly like
+the player sprite integration. Collision detection was untouched by
+this change since it only ever compared `player.z`/`car.z`/`player.x`/
+`car.x` in world coordinates, never sprite geometry. Missing/broken
+PNGs degrade to the original `draw_car()` rectangle for every traffic
+car, same fallback philosophy as everywhere else in this project.
 
 ### Road elevation: hills, a crest, and a valley
 
@@ -1067,11 +1129,20 @@ config.example.json       original placeholder defaults (committed)
 requirements.txt          runtime dependencies (pygame, numpy)
 requirements-dev.txt       + pytest, for running tests/
 tests/                    automated tests (headless, SDL dummy driver)
-assets/cars/player/       the player car's 5-pose pixel art (2026-09-05)
-                        + generate_placeholder_sprites.py, the pygame-
-                        drawing script that made them (rerun to
-                        regenerate). Traffic cars are unchanged/still
-                        procedural -- out of scope for this pass.
+assets/cars/player/       the player car's 5-pose pixel art (2026-09-05),
+                        built from a user-supplied sheet by
+                        build_from_spritesheet.py (source sheet also
+                        saved here); generate_placeholder_sprites.py
+                        kept as a fallback/dev tool, no longer the
+                        source of the shipped PNGs
+assets/cars/enemies/      the 6 traffic-car sprites (2026-09-05), built
+                        from a user-supplied sheet
+                        (assets/source/enemy_cars_sheet.png) by
+                        scripts/build_enemy_sprites.py
+scripts/build_enemy_sprites.py  background-removal (border flood fill)
+                        + slice + shared-canvas compositing for the 6
+                        enemy car sprites; rerun after replacing
+                        assets/source/enemy_cars_sheet.png
 docs/                     working log + NEXT_STEPS.md handoff (Japanese)
 ```
 

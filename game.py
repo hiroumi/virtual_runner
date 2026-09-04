@@ -194,6 +194,66 @@ def _load_player_sprites() -> dict[str, pygame.Surface]:
     return sprites
 
 
+# -- Enemy/traffic car sprites (2026-09-05) ----------------------------------
+# 6 red/black pixel-art vehicles (assets/cars/enemies/) replacing the flat
+# rectangle draw_car() drew for every traffic car previously -- extracted
+# from a user-supplied sprite sheet by scripts/build_enemy_sprites.py, which
+# also derives CANVAS_SIZE/ANCHOR below (regenerate & update this pair
+# together if the sheet is ever rebuilt at a different size, same caveat as
+# the player sprites above). Unlike the player car's 5 poses (near-identical
+# footprints, so a flicker-free switch needs everyone the same size), these
+# 6 crops intentionally differ in size -- the van/pickup are taller/wider
+# than the sedans, matching the source art -- so what's actually shared is
+# just the canvas they sit on and the bottom-center anchor point within it:
+# every vehicle's own tire-contact point lands at the same (cx, cy) even
+# though their silhouettes differ.
+ENEMY_ASSETS_DIR = Path(__file__).resolve().parent / "assets" / "cars" / "enemies"
+ENEMY_SPRITE_KEYS = (
+    "sports_coupe", "boxy_sedan", "compact_hatchback",
+    "panel_van", "muscle_car", "pickup_truck",
+)
+# Spawn-rate weights, same order as ENEMY_SPRITE_KEYS -- the "初期案" ratios
+# from CLAUDE_CODE_ENEMY_CARS_INSTRUCTIONS.txt.
+ENEMY_SPRITE_WEIGHTS = (0.20, 0.20, 0.20, 0.15, 0.15, 0.10)
+ENEMY_SPRITE_CANVAS_SIZE = (68, 56)
+ENEMY_SPRITE_ANCHOR = (34, 56)  # bottom-center
+
+# Deliberately its own fixed seed, separate from _build_traffic's lane/
+# position rng (random.Random(42)) -- sprite_id selection must never draw
+# from that rng, or every lane pick after the first car would shift and the
+# whole traffic layout (lanes, positions -- all already relied on by
+# tests/replays) would change. _build_traffic instead finishes the existing
+# lane/position/speed loop untouched, *then* makes a second pass with this
+# separate Random instance to assign sprite_id -- see its comment.
+ENEMY_SPRITE_RNG_SEED = 20260905
+
+
+_enemy_sprites_cache: dict = {"loaded": False, "sprites": {}}
+
+
+def _load_enemy_sprites() -> dict[str, pygame.Surface]:
+    """Same all-or-nothing cached-load pattern as _load_player_sprites()
+    (see its docstring) -- a partial set would let some traffic cars use
+    real art and others silently fall back mid-race, worse than every car
+    using the placeholder rectangle."""
+    if _enemy_sprites_cache["loaded"]:
+        return _enemy_sprites_cache["sprites"]
+    sprites: dict[str, pygame.Surface] = {}
+    try:
+        for key in ENEMY_SPRITE_KEYS:
+            path = ENEMY_ASSETS_DIR / f"{key}.png"
+            surf = pygame.image.load(str(path)).convert_alpha()
+            if surf.get_size() != ENEMY_SPRITE_CANVAS_SIZE:
+                sprites = {}
+                break
+            sprites[key] = surf
+    except (pygame.error, FileNotFoundError, OSError):
+        sprites = {}
+    _enemy_sprites_cache["sprites"] = sprites
+    _enemy_sprites_cache["loaded"] = True
+    return sprites
+
+
 # -- Road elevation (hills) -------------------------------------------------
 # Vertical companion to CAMERA_HEIGHT/project() below: each segment now
 # additionally carries an elevation (world_y, see road.py), and every
@@ -288,10 +348,14 @@ def draw_car(surf: pygame.Surface, cx: float, base_y: float, scale: float, color
 
 
 class TrafficCar:
-    def __init__(self, z: float, x: float, speed: float):
+    def __init__(self, z: float, x: float, speed: float, sprite_id: str | None = None):
         self.z = z
         self.x = x
         self.speed = speed
+        # Which of ENEMY_SPRITE_KEYS this car is drawn as -- assigned once
+        # in _build_traffic and never reassigned for this car's lifetime
+        # (it only ever advances along z, never respawns elsewhere).
+        self.sprite_id = sprite_id
 
 
 class Player:
@@ -347,6 +411,7 @@ class Game:
         self.player_visual_steer = 0.0  # smoothed sprite-selection input, see update()
         self._player_sprite_index = PLAYER_SPRITE_KEYS.index("straight")
         self._player_sprites = _load_player_sprites()
+        self._enemy_sprites = _load_enemy_sprites()
         self._road_base_idx = 0
         self._road_clip_before_n: list[float] = []  # crest occlusion, see _draw_road
 
@@ -380,6 +445,16 @@ class Game:
         for base in range(start, max(start + 1, end), step):
             lane = rng.choice(lane_centers)
             cars.append(TrafficCar(z=base * SEGMENT_LENGTH, x=lane, speed=TRAFFIC_SPEED))
+
+        # Sprite (vehicle model) assignment happens in a second pass, after
+        # every lane/position/speed above is already finalized, using its
+        # own independent Random(ENEMY_SPRITE_RNG_SEED) -- never rng itself.
+        # That keeps this method's rng.choice() call sequence (and so the
+        # lane/position layout every existing test and replay relies on)
+        # byte-for-byte identical to before sprite_id existed.
+        sprite_rng = random.Random(ENEMY_SPRITE_RNG_SEED)
+        for car in cars:
+            car.sprite_id = sprite_rng.choices(ENEMY_SPRITE_KEYS, weights=ENEMY_SPRITE_WEIGHTS)[0]
         return cars
 
     def _build_decor(self) -> list[tuple[float, float, float]]:
@@ -880,8 +955,32 @@ class Game:
         if not self._sprite_visible(car.z, sy):
             return
 
+        # Same distance-based scale draw_car() always used -- only *what*
+        # gets drawn at that scale changes below, not the perspective math
+        # (so near/far growth and the existing DRAW_DISTANCE/occlusion
+        # behavior are untouched).
+        scale = max(0.35, sw / (ROAD_WIDTH * 3.5))
+        sprite = self._enemy_sprites.get(car.sprite_id)
+        scaled_sprite = None
+        dest_x = dest_y = 0.0
+        if sprite is not None:
+            sprite_w, sprite_h = sprite.get_size()
+            scaled_w = max(1, round(sprite_w * scale))
+            scaled_h = max(1, round(sprite_h * scale))
+            # pygame.transform.scale (not smoothscale) -- nearest-neighbor
+            # sampling, no interpolation/antialiasing, matching the source
+            # pixel art. Scaled once here (not inside draw()) so both eyes
+            # blit the exact same surface at the exact same size.
+            scaled_sprite = pygame.transform.scale(sprite, (scaled_w, scaled_h))
+            anchor_x, anchor_y = ENEMY_SPRITE_ANCHOR
+            dest_x = sx - anchor_x * scale
+            dest_y = sy - anchor_y * scale
+
         def draw(surf: pygame.Surface, ox: float) -> None:
-            draw_car(surf, sx + ox, sy, max(0.35, sw / (ROAD_WIDTH * 3.5)), TRAFFIC_COLOR)
+            if scaled_sprite is not None:
+                surf.blit(scaled_sprite, (dest_x + ox, dest_y))
+            else:
+                draw_car(surf, sx + ox, sy, scale, TRAFFIC_COLOR)
 
         self.renderer.draw_world(tz, draw)
 
