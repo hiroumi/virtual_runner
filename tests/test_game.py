@@ -240,6 +240,19 @@ def test_game_creates_working_engine_and_tire_screech_sfx():
     pygame.quit()
 
 
+def test_debug_overlay_shows_a_reason_when_sfx_is_unavailable(monkeypatch):
+    # 2026-09-04: real-hardware report was the engine SFX simply never
+    # triggering -- this is the diagnostic path added so the D-key
+    # overlay can say why instead of just "unavailable".
+    monkeypatch.setattr(pygame.mixer, "get_init", lambda: (44100, -16, 6))
+    g = _make_game()
+    assert g.engine_sound.available is False
+    assert g.tire_screech.available is False
+    g.show_debug = True
+    g._draw()  # must not raise
+    pygame.quit()
+
+
 def test_engine_pitch_tracks_speed_over_a_full_race():
     # Not a precise audio assertion (SDL's dummy driver can't be
     # "listened to"), but a behavioral one: as the player accelerates from

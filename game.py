@@ -746,6 +746,14 @@ class Game:
             f"  tire_screech: {'on' if self.tire_screech.available else 'unavailable'}"
             f" playing={pygame.mixer.Channel(self.tire_screech.CHANNEL).get_busy() if self.tire_screech.available else False}",
         ]
+        # Only shown when something's actually wrong -- see sfx.py's
+        # unavailable_reason: exactly the "is it a trigger bug or a
+        # loudness/perception issue" question a real-hardware SFX report
+        # can't otherwise answer without another guess-and-check round.
+        if not self.engine_sound.available:
+            lines.append(f"engine unavailable: {self.engine_sound.unavailable_reason}")
+        if not self.tire_screech.available:
+            lines.append(f"tire_screech unavailable: {self.tire_screech.unavailable_reason}")
         y = 4
         for line in lines:
             surf = self.font_debug.render(line, True, DEBUG_TEXT)
@@ -763,7 +771,28 @@ def run(test_frames: int | None = None) -> None:
     the same window/renderer/MusicPlayer, exactly the "don't quit the app,
     don't touch config.json" behavior the Maker Faire reset feature needs.
     """
+    # Explicitly pin the mixer to a known-good format *before*
+    # pygame.init() auto-initializes it, instead of trusting whatever
+    # pygame/SDL would otherwise negotiate with the real output device.
+    # 2026-09-04: real-hardware testing reported the engine/tire SFX not
+    # merely quiet but genuinely never triggering (EngineSound.available
+    # stuck False) despite BGM working fine -- BGM goes through the
+    # separate pygame.mixer.music stream, unaffected by this, while SFX
+    # goes through pygame.mixer.Sound/Channel, which sfx.py's
+    # _mixer_format() refuses to use if the negotiated channel count isn't
+    # 1 or 2 (e.g. some HDMI audio paths report more). Forcing channels=2
+    # up front removes that whole class of failure; the retry below
+    # covers the case where pre_init's hint wasn't honored for some
+    # reason. See docs/PHASE2_RACE_LOG.md and sfx.py's unavailable_reason
+    # (shown on the `D`-key debug overlay) for the other likely cause this
+    # doesn't fix by itself: numpy simply not installed in the venv.
+    pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)
     pygame.init()
+    if not pygame.mixer.get_init():
+        try:
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+        except pygame.error:
+            pass
     pygame.display.set_caption("Virtual Boy Stereo Racing - Phase 2")
     open_connected_controllers()
     cfg = load_config()

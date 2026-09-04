@@ -88,14 +88,21 @@ TIRE_SCREECH_SATURATION_DRIVE = 2.4  # gentler than the engine's -- too much
 
 
 def _mixer_format():
-    """(sample_rate, channels) from the live mixer, or None if unusable."""
+    """((sample_rate, channels), None) from the live mixer, or
+    (None, reason) if unusable -- the reason string is surfaced as
+    EngineSound/TireScreech.unavailable_reason (and game.py's `D`-key
+    debug overlay) specifically so a real-hardware "SFX isn't audible"
+    report can be told apart from "SFX never even started" without
+    needing another guess-and-check round to find out which."""
     init = pygame.mixer.get_init()
     if not init:
-        return None
+        return None, "pygame.mixer not initialized (no audio device, or mixer init failed)"
     sample_rate, _size, channels = init
-    if sample_rate <= 0 or channels not in (1, 2):
-        return None
-    return sample_rate, channels
+    if sample_rate <= 0:
+        return None, f"invalid mixer sample rate ({sample_rate})"
+    if channels not in (1, 2):
+        return None, f"unsupported mixer channel count ({channels}, expected 1 or 2)"
+    return (sample_rate, channels), None
 
 
 def _soft_clip(x: "np.ndarray", drive: float) -> "np.ndarray":
@@ -173,13 +180,18 @@ class EngineSound:
 
     def __init__(self):
         self.available = False
+        self.unavailable_reason: str | None = None
         self._sounds: list[pygame.mixer.Sound] = []
         self._bucket = -1
         self._active_channel = None  # which of CHANNEL_A/B is currently "live"
         self._started = False
 
-        fmt = _mixer_format() if np is not None else None
+        if np is None:
+            self.unavailable_reason = "numpy not installed"
+            return
+        fmt, reason = _mixer_format()
         if fmt is None:
+            self.unavailable_reason = reason
             return
         sample_rate, channels = fmt
         try:
@@ -191,9 +203,10 @@ class EngineSound:
                 sound.set_volume(ENGINE_VOLUME)
                 self._sounds.append(sound)
             self.available = True
-        except (pygame.error, ValueError):
+        except (pygame.error, ValueError) as exc:
             self._sounds = []
             self.available = False
+            self.unavailable_reason = f"sound creation failed: {exc.__class__.__name__}: {exc}"
 
     def _bucket_for(self, speed_frac: float) -> int:
         speed_frac = max(0.0, min(1.0, speed_frac))
@@ -244,10 +257,15 @@ class TireScreech:
 
     def __init__(self, seed: int = 7):
         self.available = False
+        self.unavailable_reason: str | None = None
         self._sound = None
 
-        fmt = _mixer_format() if np is not None else None
+        if np is None:
+            self.unavailable_reason = "numpy not installed"
+            return
+        fmt, reason = _mixer_format()
         if fmt is None:
+            self.unavailable_reason = reason
             return
         sample_rate, channels = fmt
         try:
@@ -256,9 +274,10 @@ class TireScreech:
             self._sound = _to_sound(wave, channels)
             self._sound.set_volume(TIRE_SCREECH_VOLUME)
             self.available = True
-        except (pygame.error, ValueError):
+        except (pygame.error, ValueError) as exc:
             self._sound = None
             self.available = False
+            self.unavailable_reason = f"sound creation failed: {exc.__class__.__name__}: {exc}"
 
     def update(self, lateral_proxy: float, active: bool) -> None:
         if not self.available:

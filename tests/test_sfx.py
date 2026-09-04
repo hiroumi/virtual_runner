@@ -175,6 +175,7 @@ def test_engine_sound_degrades_silently_when_mixer_unavailable(monkeypatch):
     monkeypatch.setattr(pygame.mixer, "get_init", lambda: None)
     e = EngineSound()
     assert e.available is False
+    assert "not initialized" in e.unavailable_reason
     e.update(0.5, active=True)  # must not raise
     e.stop()
     pygame.quit()
@@ -185,6 +186,7 @@ def test_tire_screech_degrades_silently_when_mixer_unavailable(monkeypatch):
     monkeypatch.setattr(pygame.mixer, "get_init", lambda: None)
     t = TireScreech()
     assert t.available is False
+    assert "not initialized" in t.unavailable_reason
     t.update(1.0, active=True)  # must not raise
     t.stop()
     pygame.quit()
@@ -195,6 +197,7 @@ def test_engine_sound_degrades_silently_when_numpy_is_unavailable(monkeypatch):
     monkeypatch.setattr(sfx, "np", None)
     e = EngineSound()
     assert e.available is False
+    assert e.unavailable_reason == "numpy not installed"
     e.update(0.5, active=True)
     pygame.quit()
 
@@ -204,5 +207,55 @@ def test_tire_screech_degrades_silently_when_numpy_is_unavailable(monkeypatch):
     monkeypatch.setattr(sfx, "np", None)
     t = TireScreech()
     assert t.available is False
+    assert t.unavailable_reason == "numpy not installed"
     t.update(1.0, active=True)
+    pygame.quit()
+
+
+# -- unavailable_reason diagnostics (2026-09-04: real-hardware report of
+# the engine SFX simply never triggering, with no way to tell whether
+# that was a mixer/numpy problem or a loudness/perception one) ----------
+
+
+def test_mixer_format_reports_a_reason_when_the_mixer_is_uninitialized(monkeypatch):
+    monkeypatch.setattr(pygame.mixer, "get_init", lambda: None)
+    fmt, reason = sfx._mixer_format()
+    assert fmt is None
+    assert "not initialized" in reason
+
+
+def test_mixer_format_reports_a_reason_for_an_unsupported_channel_count(monkeypatch):
+    _init()
+    monkeypatch.setattr(pygame.mixer, "get_init", lambda: (44100, -16, 6))
+    fmt, reason = sfx._mixer_format()
+    assert fmt is None
+    assert "channel count" in reason
+    pygame.quit()
+
+
+def test_mixer_format_returns_no_reason_when_usable():
+    _init()
+    fmt, reason = sfx._mixer_format()
+    assert fmt is not None
+    assert reason is None
+    pygame.quit()
+
+
+def test_engine_sound_reports_unsupported_channel_count(monkeypatch):
+    _init()
+    monkeypatch.setattr(pygame.mixer, "get_init", lambda: (44100, -16, 6))
+    e = EngineSound()
+    assert e.available is False
+    assert "channel count" in e.unavailable_reason
+    pygame.quit()
+
+
+def test_available_engine_and_tire_screech_have_no_unavailable_reason():
+    _init()
+    e = EngineSound()
+    t = TireScreech()
+    assert e.available is True
+    assert e.unavailable_reason is None
+    assert t.available is True
+    assert t.unavailable_reason is None
     pygame.quit()

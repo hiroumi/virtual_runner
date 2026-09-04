@@ -518,10 +518,43 @@ Simulated effective RMS: engine 0.525 -> 0.808, tire 0.319 -> 0.483
 (peaks still safely under 1.0). Expect a noticeably grittier engine tone
 now, not just a louder version of the old one -- if that reads as
 distortion rather than punch, `ENGINE_SATURATION_DRIVE` is the knob to
-back off. If it's *still* too quiet after this, there's no more volume
-headroom left to raise -- the next lever would be the waveform itself
-(harmonic mix, frequency range) rather than gain. See
-docs/PHASE2_RACE_LOG.md for the full numbers.
+back off.
+
+**2026-09-04, third pass: "still don't feel like the engine sound is
+there."** That phrasing, from real hardware, pointed away from "quiet"
+and toward "maybe never playing at all" -- confirmed by checking the `D`
+debug overlay, which showed `engine: unavailable` (or the pitch bucket
+never changing) rather than `on`. Every SFX volume/saturation change
+above this point was consequently dead code on that machine: `EngineSound`
+returns early with `available = False` whenever it can't get a usable
+mixer format, before `ENGINE_VOLUME`/`ENGINE_SATURATION_DRIVE` ever come
+into play. Two likely causes, addressed together since real hardware
+couldn't be tested directly to pick one:
+
+1. **numpy not actually installed** in the real machine's venv --
+   `sfx.py` degrades silently to `np = None` on `ImportError`, and numpy
+   was only added to `requirements.txt` when the SFX feature first
+   shipped, so a venv that wasn't re-provisioned since would be missing
+   it entirely. BGM (`music.py`) has no numpy dependency, so it working
+   fine is consistent with this.
+2. **The mixer negotiating something other than 1 or 2 channels** with
+   the real audio device -- `sfx.py`'s `_mixer_format()` refuses to use
+   anything else, and this project never called `pygame.mixer.init()`
+   explicitly, leaving that negotiation to whatever `pygame.init()`'s
+   auto-init picked. `game.py`'s module-level `run()` now calls
+   `pygame.mixer.pre_init(frequency=44100, size=-16, channels=2,
+   buffer=512)` before `pygame.init()`, pinning a known-good format
+   instead of trusting auto-negotiation, with a retry if that hint isn't
+   honored.
+
+Neither of the above is guaranteed to be *the* cause without hearing the
+result, so `EngineSound`/`TireScreech` now also track *why* they're
+unavailable in a new `unavailable_reason` string (`"numpy not
+installed"`, `"pygame.mixer not initialized..."`, `"unsupported mixer
+channel count (N, expected 1 or 2)"`, or a caught exception's message),
+shown on the `D` debug overlay whenever either SFX is `unavailable` --
+so the next real-hardware check can read off the exact reason instead of
+another round of guessing.
 
 ### How the road gets its stereo effect
 
