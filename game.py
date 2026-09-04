@@ -23,6 +23,7 @@ import random
 import pygame
 
 from config import load_config, save_config
+from input_reset import GamepadResetHold, open_connected_controllers, open_controller_from_event
 from road import (
     DRAW_DISTANCE,
     ROAD_WIDTH,
@@ -61,6 +62,13 @@ CAMERA_DEPTH = 1.0 / math.tan(math.radians(FOV_DEG / 2))
 
 RACE_TIME = 90.0
 PLAYER_CAR_DEPTH = 3.0  # matches the Phase 2 test scene's tuned value
+
+# Maker Faire "next visitor" reset: Backspace (keyboard) or an ~1s held
+# Select/Back (gamepad, see input_reset.GamepadResetHold) tears the
+# current session down and returns to SELECT MUSIC without quitting
+# pygame or touching config.json -- see Game._trigger_reset / run()'s
+# docstring below for the full flow.
+RESET_FLASH_MS = 150  # how long the "RESET" flat-text flash is held on screen
 
 # The speedometer always reads HUD_MAX_DISPLAY_SPEED at MAX_SPEED,
 # regardless of what MAX_SPEED actually is -- this lets the underlying
@@ -251,6 +259,11 @@ class Game:
         self.engine_sound = EngineSound()
         self.tire_screech = TireScreech()
 
+        # run()'s exit reason ("quit" or "reset") -- see _trigger_reset
+        # and run()'s docstring.
+        self._outcome = "quit"
+        self.gamepad_reset_hold = GamepadResetHold()
+
     def _make_display(self) -> pygame.Surface:
         return _make_display(self.cfg)
 
@@ -275,7 +288,14 @@ class Game:
         return decor
 
     # -- main loop ------------------------------------------------------
-    def run(self, test_frames: int | None = None) -> None:
+    def run(self, test_frames: int | None = None) -> str:
+        """Runs the race until the player quits (Esc / window close) or
+        triggers a Reset (Backspace, or an ~1s held gamepad Select/Back --
+        see _trigger_reset). Returns "quit" or "reset" so the module-level
+        run() below knows whether to tear the whole session down or loop
+        back to SELECT MUSIC -- this method itself never calls
+        pygame.quit(), so the window/display/renderer/MusicPlayer this
+        Game was constructed with stay alive either way."""
         running = True
         frame = 0
         while running:
@@ -283,10 +303,18 @@ class Game:
             dt = min(dt, 0.05)
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
+                    self._outcome = "quit"
                     running = False
                 elif event.type == pygame.KEYDOWN:
                     if not self._handle_keydown(event):
                         running = False
+                elif event.type in (pygame.CONTROLLERBUTTONDOWN, pygame.CONTROLLERBUTTONUP):
+                    self.gamepad_reset_hold.handle_event(event)
+                elif event.type == pygame.CONTROLLERDEVICEADDED:
+                    open_controller_from_event(event)
+            if running and self.gamepad_reset_hold.triggered():
+                self._trigger_reset()
+                running = False
             keys = pygame.key.get_pressed()
             self.update(dt, keys)
             self._draw()
@@ -294,12 +322,18 @@ class Game:
             frame += 1
             if test_frames is not None and frame >= test_frames:
                 running = False
-        pygame.quit()
+        if self._outcome == "reset":
+            self._draw_reset_flash()
+        return self._outcome
 
     def _handle_keydown(self, event: pygame.event.Event) -> bool:
         renderer, cfg = self.renderer, self.cfg
         key = event.key
         if key == pygame.K_ESCAPE:
+            self._outcome = "quit"
+            return False
+        elif key == pygame.K_BACKSPACE:
+            self._trigger_reset()
             return False
         elif key == pygame.K_r:
             self._restart()
@@ -332,6 +366,38 @@ class Game:
         self.traffic = self._build_traffic()
         self.cam_elevation = 0.0
         self.player_bob = 0.0
+
+    def _trigger_reset(self) -> None:
+        """The Maker Faire "next visitor" Reset, as opposed to _restart()
+        (same BGM/settings, same race from the top): this clears the race
+        exactly like _restart() but additionally stops the BGM and SFX and
+        marks run()'s outcome as "reset" so the caller ends the race loop
+        and shows SELECT MUSIC again (which resets the track selection to
+        PIXEL BREEZE and previews it, on its own -- see
+        MusicSelectScreen.run()). Never touches self.cfg / config.json."""
+        self.engine_sound.stop()
+        self.tire_screech.stop()
+        if self.music is not None:
+            self.music.stop()
+        self._restart()
+        self._outcome = "reset"
+
+    def _draw_reset_flash(self) -> None:
+        """A brief "RESET" flash before control returns to SELECT MUSIC --
+        drawn zero-parallax like the select screen itself (not the
+        screen-center overlay _draw_message uses), so it's actually
+        readable through both lenses. Kept short on purpose: this runs at
+        a live exhibit, not a menu a visitor is expected to read."""
+        def draw(surf: pygame.Surface, ox: float) -> None:
+            w, h = surf.get_size()
+            text = self.font_message.render("RESET", True, MESSAGE_COLOR)
+            surf.blit(text, text.get_rect(center=(w / 2 + ox, h / 2)))
+
+        self.renderer.begin_frame(BLACK)
+        self.renderer.draw_flat(draw)
+        self.renderer.present()
+        pygame.display.flip()
+        pygame.time.delay(RESET_FLASH_MS)
 
     # -- simulation (runs once, regardless of how many eyes we draw) ----
     def update(self, dt: float, keys) -> None:
@@ -658,7 +724,7 @@ class Game:
 
     def _draw_message(self) -> None:
         text = "FINISH!" if self.finished else "TIME UP"
-        sub = f"score {int(self.score)}  -  R to restart"
+        sub = f"score {int(self.score)}  -  R restart  -  BACKSPACE reset"
         surf1 = self.font_message.render(text, True, MESSAGE_COLOR)
         surf2 = self.font_debug.render(sub, True, MESSAGE_COLOR)
         cx = self.cfg.output_width // 2
@@ -688,26 +754,42 @@ class Game:
 
 
 def run(test_frames: int | None = None) -> None:
+    """Owns the whole process-lifetime session: pygame.init()/pygame.quit()
+    are called exactly once each, here, no matter how many races are
+    played. Between them, SELECT MUSIC and the race alternate in a loop --
+    a normal quit (Esc / window close, from either screen) breaks out and
+    falls through to the single pygame.quit() at the bottom; a Reset
+    (Game.run() returning "reset") instead loops back to SELECT MUSIC with
+    the same window/renderer/MusicPlayer, exactly the "don't quit the app,
+    don't touch config.json" behavior the Maker Faire reset feature needs.
+    """
     pygame.init()
     pygame.display.set_caption("Virtual Boy Stereo Racing - Phase 2")
+    open_connected_controllers()
     cfg = load_config()
     screen = _make_display(cfg)
     renderer = StereoRenderer(screen, cfg)
     music = MusicPlayer()
 
-    selected = MusicSelectScreen(renderer, music).run(test_frames=test_frames)
-    if selected is None:
-        # Quit from the select screen (Esc / window close) -- no race.
-        pygame.quit()
-        return
-    # MusicSelectScreen.run() already leaves music.index pointing at the
-    # confirmed track as a side effect of its own select()/next()/prev()
-    # calls -- select() here again anyway so Game's music state doesn't
-    # silently depend on that invariant holding in whatever returned
-    # `selected`.
-    music.select(selected)
+    while True:
+        selected = MusicSelectScreen(renderer, music).run(test_frames=test_frames)
+        if selected is None:
+            # Quit from the select screen (Esc / window close) -- no race.
+            break
+        # MusicSelectScreen.run() already leaves music.index pointing at
+        # the confirmed track as a side effect of its own
+        # select()/next()/prev() calls -- select() here again anyway so
+        # Game's music state doesn't silently depend on that invariant
+        # holding in whatever returned `selected`.
+        music.select(selected)
 
-    Game(cfg, screen=screen, renderer=renderer, music=music).run(test_frames=test_frames)
+        outcome = Game(cfg, screen=screen, renderer=renderer, music=music).run(
+            test_frames=test_frames
+        )
+        if outcome != "reset":
+            break
+
+    pygame.quit()
 
 
 def main() -> None:

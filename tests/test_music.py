@@ -197,6 +197,71 @@ def test_left_from_the_first_track_wraps_to_the_last_via_the_event_loop(monkeypa
     pygame.quit()
 
 
+def test_backspace_resets_selection_to_pixel_breeze_and_stays_on_screen(monkeypatch):
+    # Maker Faire Reset, from the SELECT MUSIC screen itself: even after
+    # scrolling away from the first track, Backspace must bring the
+    # selection back to PIXEL BREEZE without confirming/leaving the screen.
+    screen, music = _make_screen()
+    monkeypatch.setattr(
+        pygame.event, "get",
+        _scripted_keydowns([pygame.K_RIGHT, pygame.K_RIGHT, pygame.K_BACKSPACE, pygame.K_RETURN]),
+    )
+    result = screen.run(test_frames=None)
+    assert result == 0
+    assert music.current_name == "PIXEL BREEZE"
+    pygame.quit()
+
+
+def test_reset_to_pixel_breeze_helper_resets_selection_and_preview():
+    # The same helper Backspace and a held gamepad Select/Back both call.
+    screen, music = _make_screen()
+    music.select(1)
+    screen._reset_to_pixel_breeze()
+    assert music.current_name == "PIXEL BREEZE"
+    pygame.quit()
+
+
+def test_gamepad_hold_reset_is_wired_into_the_select_screens_event_loop(monkeypatch):
+    from input_reset import GamepadResetHold
+
+    screen, music = _make_screen()
+    music.select(1)
+    trigger_calls = []
+
+    def fake_triggered(self):
+        trigger_calls.append(1)
+        return len(trigger_calls) == 1  # fire once, on the first frame only
+
+    monkeypatch.setattr(GamepadResetHold, "triggered", fake_triggered)
+    events = iter([
+        [],  # frame 1: no keys, but the (faked) gamepad hold triggers
+        [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0)],  # frame 2: confirm
+    ])
+    monkeypatch.setattr(pygame.event, "get", lambda: next(events, []))
+    result = screen.run(test_frames=None)
+    assert result == 0
+    assert music.current_name == "PIXEL BREEZE"
+    pygame.quit()
+
+
+def test_music_player_stop_is_safe_with_nothing_playing():
+    pygame.init()
+    m = MusicPlayer()
+    m.stop()  # must not raise even though nothing was ever played
+    pygame.quit()
+
+
+@pytest.mark.skipif(not BGM_ASSETS_PRESENT, reason="bgm/ assets not present")
+def test_music_player_stop_actually_stops_playback():
+    pygame.init()
+    m = MusicPlayer()
+    m.play_selected(loop=True, fade_ms=0)
+    assert pygame.mixer.music.get_busy() is True
+    m.stop()
+    assert pygame.mixer.music.get_busy() is False
+    pygame.quit()
+
+
 def test_escape_quits_without_selecting(monkeypatch):
     screen, music = _make_screen()
     monkeypatch.setattr(pygame.event, "get", _scripted_keydowns([pygame.K_ESCAPE]))

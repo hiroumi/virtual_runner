@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pygame
 
+from input_reset import GamepadResetHold, open_controller_from_event
+
 BGM_DIR = Path(__file__).resolve().parent / "bgm"
 
 # (display name, filename in BGM_DIR), in the order they cycle through.
@@ -123,6 +125,17 @@ class MusicPlayer:
         same track from the beginning, looping, for the race itself."""
         return self.play_selected(loop=True, fade_ms=LOOP_FADE_MS)
 
+    def stop(self) -> None:
+        """Used by the Maker Faire "Reset" feature to silence whatever's
+        playing (preview or in-race loop) before handing control back to
+        the SELECT MUSIC screen, which will load and preview PIXEL BREEZE
+        on its own. Safe to call even if the mixer was never initialized
+        or nothing is playing."""
+        try:
+            pygame.mixer.music.stop()
+        except pygame.error:
+            pass
+
 
 class MusicSelectScreen:
     """The "SELECT MUSIC" screen shown before the race: title, a
@@ -139,6 +152,15 @@ class MusicSelectScreen:
         self.font_hint = _font(12)
         self.font_error = _font(11)
         self.clock = pygame.time.Clock()
+        self.gamepad_reset_hold = GamepadResetHold()
+
+    def _reset_to_pixel_breeze(self) -> None:
+        """Backspace (immediate) or a held gamepad Select/Back (see
+        GamepadResetHold) on this screen: there's no race in progress to
+        clear, so "Reset" here is just re-doing what run() already does on
+        entry -- back to PIXEL BREEZE, previewed from the start."""
+        self.music.select(0)
+        self.music.switch_to_selected_preview()
 
     def run(self, test_frames: int | None = None) -> int | None:
         """Returns the confirmed track index, or None if the player quit
@@ -171,6 +193,14 @@ class MusicSelectScreen:
                         self.music.switch_to_selected_preview()
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                         return self.music.index
+                    elif event.key == pygame.K_BACKSPACE:
+                        self._reset_to_pixel_breeze()
+                elif event.type in (pygame.CONTROLLERBUTTONDOWN, pygame.CONTROLLERBUTTONUP):
+                    self.gamepad_reset_hold.handle_event(event)
+                elif event.type == pygame.CONTROLLERDEVICEADDED:
+                    open_controller_from_event(event)
+            if self.gamepad_reset_hold.triggered():
+                self._reset_to_pixel_breeze()
             self._draw_frame()
 
     def _draw_frame(self) -> None:

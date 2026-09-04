@@ -503,6 +503,52 @@ VALLEY_STARTは変更していない（下記カーブ変更で各区間のセ�
 1. SELECT MUSIC画面での試聴、レース中のBGMいずれも、体感で「大きすぎず小さすぎない」65%程度に聞こえるか（エンジン音・タイヤ軋み音とのバランスも含む）
 2. 感覚と違えば`BGM_VOLUME`（`music.py`）を調整可能
 
+## 2026-09-04: Maker Faire展示用「RESET」機能を追加
+
+来場者が交代するたびにアプリを終了・再起動しなくても済むよう、「アプリを終了せず起動直後の状態へ戻せる」Reset機能を追加した（既存のRestart＝同じBGM/設定のまま現在のレースをやり直す、とは明確に別の操作）。
+
+### 現状確認（実装前）
+
+- 画面状態管理: `game.run()`（モジュールレベル）は「SELECT MUSIC → `Game.run()`」を一直線に呼ぶだけで、SELECT MUSICへ「戻る」経路自体が存在しなかった。`Game.run()`はメインループの最後に無条件で`pygame.quit()`を呼んでいた。
+- Restart（`R`キー）: `Game._restart()`はplayer/タイマー/スコア/衝突/`traffic`/`cam_elevation`/`player_bob`をクリアするが、BGM・SEには触れない。
+- 入力割り当て: キーボードは矢印/WASD・`[` `]`・`Z`・`I`・`D`・`F`・`S`・`R`・`Esc`が使用済みで、**`Backspace`は未使用**。ゲームパッド対応は`pygame.joystick`/`pygame.controller`関連コードが一切存在せず、**新規実装**であることを確認した。
+
+### ゲームパッドのボタンマッピングについてユーザーに確認
+
+「実機で使うゲームパッドの機種が不明なままボタン番号を決め打ちできない」旨を報告し、ユーザーに選択してもらった結果、「標準的なXbox/PS系コントローラーを想定し、SDL_GameController API（`pygame`の`CONTROLLER_BUTTON_BACK`等、機種非依存の名前空間）で実装する」方針で合意。実機がまだ無くても先に実装を進め、実機到着後にボタン割り当てだけ確認すればよい設計とした。
+
+### 対応
+
+- 新規`input_reset.py`：`music.py`と`game.py`の両方から使う、Select/Backボタンの「約1秒長押しでReset」判定を共通化した`GamepadResetHold`クラスと、接続済み/後から接続されたゲームパッドを安全に開く`open_connected_controllers()`/`open_controller_from_event()`を実装。ゲームパッドが存在しない・認識されない環境でも例外を投げない設計（`pygame.error`を握りつぶす）。
+- `Game._trigger_reset()`（新規）：既存`_restart()`を呼んでレース状態（速度・位置・スコア・タイマー・衝突状態・敵車配置・カメラ関連の補間値）をクリアしつつ、追加でエンジン音/タイヤ軋み音のSEを停止（`engine_sound.stop()`/`tire_screech.stop()`）、BGMを停止（`MusicPlayer`に新規追加した`stop()`）し、`self._outcome = "reset"`をセットする。
+- `Game._handle_keydown`に`Backspace`を追加（即時Reset、`_trigger_reset()`を呼んで`False`を返しループを終了）。
+- `Game.run()`のメインループへゲームパッドイベント（`CONTROLLERBUTTONDOWN`/`UP`/`CONTROLLERDEVICEADDED`）の処理を追加し、毎フレーム`GamepadResetHold.triggered()`をチェック（約1秒保持で発火、離せばキャンセル）。
+- `Game.run()`は末尾の`pygame.quit()`を廃止し、代わりに`"quit"`／`"reset"`のoutcome文字列を返すよう変更。`"reset"`の場合のみ、`renderer.draw_flat`経由（視差ゼロ、SELECT MUSIC画面と同じ方式で左右に描画）で「RESET」を一瞬（150ms）表示してから返す。
+- モジュールレベルの`game.run()`を`while True:`ループに変更：SELECT MUSIC → `Game.run()`を実行し、outcomeが`"reset"`ならウィンドウ・`renderer`・`MusicPlayer`インスタンスを使い回したままループを継続、`"reset"`以外（`"quit"`）でループを抜けて`pygame.quit()`を一度だけ呼ぶ。`cfg`（config.json由来のオブジェクト）は一度読み込んだものをそのまま使い回し、再読み込み・再保存は一切行わない。
+- SELECT MUSIC画面（`music.py`の`MusicSelectScreen`）にも同じ`Backspace`/ゲームパッド長押しを追加：レース中でなくても対応するため、選択を強制的にPIXEL BREEZEへ戻し試聴を再生し直す（画面遷移はしない——そもそもこの画面にいる時点で戻る先は無いため）。
+- `MusicPlayer.stop()`（新規）：`pygame.mixer.music.stop()`の安全なラッパー。
+- ゴール後/タイムアップ後のヒント表示を`"score {n}  -  R restart  -  BACKSPACE reset"`に更新し、Reset操作が画面上でも分かるようにした。
+
+これにより、SELECT MUSIC画面・レース中・ゴール後・タイムアップ後・リスタート待ち（＝ゴール後/タイムアップ後と同一の状態）のいずれからも、同じ`Backspace`/ゲームパッド長押しでResetできる。
+
+### 検証結果
+
+- `pytest`：既存93件＋新規22件（`tests/test_input_reset.py`新規5件、`tests/test_game.py`13件、`tests/test_music.py`4件）、計115件すべて成功
+- `python main.py --race --test-frames 60`：ヘッドレスでクラッシュなく正常終了
+- `config.json`は本作業でも一切変更していないことを`git diff`で確認済み（`save_config`が呼ばれていないことをテストでも確認）
+- レース中からのBackspaceで、SELECT MUSICへ戻り、かつ新しいレースが正常に開始できることを`game.run()`レベルの結合テストで確認
+- Restart（`R`）とReset（`Backspace`）が独立した動作であること（RestartはBGM/`_outcome`に影響しない）を確認
+- 5回連続でResetしてもクラッシュしないことを確認
+- 実際のゲームパッドが接続されていない（このセッション・CI含む）環境でも、`CONTROLLERBUTTONDOWN`/`UP`イベントを直接生成してテストすることで、長押し判定ロジック自体は検証済み
+
+### 実機で確認してほしいこと
+
+1. **実際のゲームパッドでのSelect/Backボタンの動作確認**：使用予定のコントローラーが実際にXbox/PS系としてSDLに認識され、`CONTROLLER_BUTTON_BACK`に対応するボタン（多くの場合「Select」「Back」「View」等の表記）で約1秒長押しするとResetが発火するか。認識されない機種の場合は生の`pygame.joystick`ボタン番号での個別対応が必要になる可能性がある。
+2. 長押しの1秒という時間が、展示会での誤操作防止として適切な長さか（短すぎる/長すぎると感じたら`input_reset.py`の`RESET_HOLD_MS`で調整可能）。
+3. `Backspace`キーでの即時Resetが、SELECT MUSIC画面・レース中・ゴール後・タイムアップ後のいずれからも違和感なく機能するか。
+4. Reset時の「RESET」表示（150ms）が、左右の目でズレなく一つに見えるか、短すぎて見えない／長すぎてテンポを損なう、と感じないか。
+5. SELECT MUSIC画面でBackspace/ゲームパッド長押しをした際、PIXEL BREEZEへ戻って試聴が正しく再生され直すか。
+
 ## 現在のステータス
 
-動く疑似3Dレーシングゲーム本体の実装が完了。カーブ形状・高速コーナリング・3車線化・カーブの緩和（2段階）・カーブ中の背景パン/車のリーン・カーブ中のカクつき修正・スピード感向上（240→320km/h→実質360km/h相当を320表示）・道路の起伏（上り坂・頂上・下り坂・谷、頂上での遮蔽込み）・坂の強調・早期化とカーブの「うねうねS字」化・BGM選択画面・エンジン音/タイヤ軋み音のSEに加え、SEの音量修正（2026-09-04）・BGMの初期音量設定（2026-09-04）まで実装済み。実機での走行確認待ち。
+動く疑似3Dレーシングゲーム本体の実装が完了。カーブ形状・高速コーナリング・3車線化・カーブの緩和（2段階）・カーブ中の背景パン/車のリーン・カーブ中のカクつき修正・スピード感向上（240→320km/h→実質360km/h相当を320表示）・道路の起伏（上り坂・頂上・下り坂・谷、頂上での遮蔽込み）・坂の強調・早期化とカーブの「うねうねS字」化・BGM選択画面・エンジン音/タイヤ軋み音のSEに加え、SEの音量修正（2026-09-04）・BGMの初期音量設定（2026-09-04）・Maker Faire展示用RESET機能（2026-09-04）まで実装済み。実機での走行確認待ち。

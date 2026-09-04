@@ -8,6 +8,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pygame
+import pytest
 
 import game
 from config import default_config
@@ -325,4 +326,166 @@ def test_every_key_binding_executes_without_crashing(monkeypatch):
         g._draw()
     esc = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0)
     assert g._handle_keydown(esc) is False
+    assert g._outcome == "quit"
+    pygame.quit()
+
+
+# -- Maker Faire "Reset" (Backspace / held gamepad Select-Back) ------------
+
+
+def test_backspace_ends_the_key_loop_and_marks_the_outcome_as_reset():
+    g = _make_game()
+    event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_BACKSPACE, mod=0)
+    assert g._handle_keydown(event) is False
+    assert g._outcome == "reset"
+    pygame.quit()
+
+
+def test_trigger_reset_clears_race_state_like_restart_does():
+    g = _make_game()
+    g.player.z = 500.0
+    g.player.x = 1.5
+    g.player.speed = 50.0
+    g.score = 1234.0
+    g.time_left = 10.0
+    g.collision_cooldown = 0.5
+    g.finished = True
+    g.time_up = True
+    g._trigger_reset()
+    assert g.player.z == 0.0
+    assert g.player.x == 0.0
+    assert g.player.speed == 0.0
+    assert g.score == 0.0
+    assert g.time_left == game.RACE_TIME
+    assert g.collision_cooldown == 0.0
+    assert g.finished is False
+    assert g.time_up is False
+    pygame.quit()
+
+
+def test_trigger_reset_rebuilds_traffic_to_its_starting_state():
+    g = _make_game()
+    original_positions = [car.z for car in g.traffic]
+    for car in g.traffic:
+        car.z += 999.0
+    g._trigger_reset()
+    assert [car.z for car in g.traffic] == original_positions
+    pygame.quit()
+
+
+def test_trigger_reset_stops_engine_and_tire_sfx():
+    g = _make_game()
+    g.update(1 / 60, _keys(UP=True))  # get the engine sound actually started
+    assert g.engine_sound._started is True
+    g._trigger_reset()
+    assert g.engine_sound._started is False
+    pygame.quit()
+
+
+@pytest.mark.skipif(not BGM_ASSETS_PRESENT, reason="bgm/ assets not present")
+def test_trigger_reset_stops_the_bgm():
+    pygame.init()
+    pygame.display.set_mode((1024, 600))
+    music = MusicPlayer()
+    music.select(2)  # BEYOND THE RED HORIZON
+    g = game.Game(default_config(), music=music)
+    assert pygame.mixer.music.get_busy() is True
+    g._trigger_reset()
+    assert pygame.mixer.music.get_busy() is False
+    pygame.quit()
+
+
+def test_trigger_reset_sets_the_outcome_to_reset():
+    g = _make_game()
+    g._trigger_reset()
+    assert g._outcome == "reset"
+    pygame.quit()
+
+
+def test_restart_is_unaffected_by_and_distinct_from_reset():
+    # Restart (R) must NOT stop the BGM/SFX or mark the outcome as
+    # "reset" -- that's exactly the behavior that's supposed to be unique
+    # to Backspace/gamepad-hold Reset.
+    pygame.init()
+    pygame.display.set_mode((1024, 600))
+    music = MusicPlayer()
+    music.select(1)  # CRIMSON HIGHWAY
+    g = game.Game(default_config(), music=music)
+    g.score = 500.0
+    g._restart()
+    assert g.score == 0.0  # restart still clears race state...
+    assert g._outcome == "quit"  # ...but does not request a session reset
+    if BGM_ASSETS_PRESENT:
+        assert pygame.mixer.music.get_busy() is True  # BGM keeps playing
+        assert music.current_name == "CRIMSON HIGHWAY"  # selection unchanged
+    pygame.quit()
+
+
+def test_reset_does_not_touch_config_or_the_calibrated_viewport(monkeypatch):
+    called = []
+    monkeypatch.setattr(game, "save_config", lambda cfg, path=None: called.append(cfg))
+    g = _make_game()
+    left_before = g.cfg.left_viewport
+    right_before = g.cfg.right_viewport
+    parallax_before = g.cfg.parallax_scale
+    g._trigger_reset()
+    assert called == []
+    assert g.cfg.left_viewport == left_before
+    assert g.cfg.right_viewport == right_before
+    assert g.cfg.parallax_scale == parallax_before
+    pygame.quit()
+
+
+def test_repeated_resets_do_not_crash():
+    g = _make_game()
+    for i in range(5):
+        g.player.z = 100.0 * (i + 1)
+        g.score = 50.0
+        g.update(1 / 60, _keys(UP=True))
+        g._trigger_reset()
+        assert g.player.z == 0.0
+        assert g.score == 0.0
+    pygame.quit()
+
+
+def test_backspace_during_the_race_returns_to_select_screen_and_starts_a_new_race(monkeypatch):
+    # Full integration through the module-level game.run() loop: a
+    # Backspace keypress mid-race must end that race, bring back SELECT
+    # MUSIC (not quit the app), and then let a brand new race start
+    # normally -- exactly the "next visitor" flow this feature exists for.
+    calls = []
+
+    def fake_select_run(self, test_frames=None):
+        calls.append(self.music.index)
+        self.music.select(0)
+        return 0
+
+    monkeypatch.setattr(MusicSelectScreen, "run", fake_select_run)
+    pygame.init()
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_BACKSPACE, mod=0))
+    game.run(test_frames=3)  # must not raise
+    # Called once for the initial screen, once more after the reset.
+    assert len(calls) == 2
+
+
+def test_game_run_loops_back_to_select_screen_when_a_race_returns_reset(monkeypatch):
+    outcomes = iter(["reset", "quit"])
+    monkeypatch.setattr(game.Game, "run", lambda self, test_frames=None: next(outcomes))
+    select_screen_runs = []
+
+    def counting_select_run(self, test_frames=None):
+        select_screen_runs.append(1)
+        self.music.select(0)
+        return 0
+
+    monkeypatch.setattr(MusicSelectScreen, "run", counting_select_run)
+    game.run(test_frames=3)
+    assert len(select_screen_runs) == 2  # looped back exactly once after "reset"
+
+
+def test_game_run_resets_when_the_gamepad_hold_triggers(monkeypatch):
+    monkeypatch.setattr(game.GamepadResetHold, "triggered", lambda self: True)
+    g = _make_game()
+    outcome = g.run(test_frames=3)
+    assert outcome == "reset"
     pygame.quit()

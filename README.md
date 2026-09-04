@@ -419,13 +419,41 @@ playing at full (100%) volume.
 | `D` | Toggle FPS / frame-time / depth debug overlay |
 | `F` | Toggle fullscreen / windowed |
 | `S` | Save current `parallax_scale` to `config.json` |
-| `R` | Restart the race |
+| `R` | Restart the race (same BGM/settings, current race from the top) |
+| `Backspace`, or a gamepad's Select/Back button held ~1s | Reset (see below) |
 | `Esc` | Quit |
 
 Driving off the road (`abs(player.x) > 1.0`) caps your top speed and adds
 extra friction. Touching a traffic car cuts your speed and starts a
 1-second collision cooldown so a single graze can't repeatedly stack
 penalties every frame.
+
+### Reset, for switching players at a booth (2026-09-04)
+
+`Restart` (`R`) redoes the current race with the same BGM and settings.
+`Reset` is a different, larger operation added for running this as a
+Maker Faire exhibit: it tears the whole session down back to the
+SELECT MUSIC screen -- track selection back to `PIXEL BREEZE`, race
+state/enemies/SFX/BGM all cleared -- so the next visitor can pick a
+track and play without anyone needing to quit and relaunch the app.
+Available from every screen: SELECT MUSIC, mid-race, after a finish,
+after time-up.
+
+`Backspace` resets immediately. A gamepad's Select/Back button must be
+held for about a second first (`input_reset.GamepadResetHold`,
+`RESET_HOLD_MS`), so a brief accidental press at a booth doesn't wipe
+someone's race. Gamepad support is new (there was none before): it uses
+pygame's SDL_GameController-backed events
+(`CONTROLLER_BUTTON_BACK`/`CONTROLLERBUTTONDOWN`/`UP`), so "Select/Back"
+means the same physical button across different Xbox/PS-style pads
+instead of a hardware-specific button index -- untested on the actual
+exhibit controller yet (see "What to check on the real accessory"
+below).
+
+Reset never touches `config.json` or the calibrated viewports, and never
+calls `pygame.quit()` / recreates the window -- `game.run()`'s top-level
+loop just re-enters the SELECT MUSIC screen with the same window,
+renderer, and `MusicPlayer` it already had.
 
 ### Sound effects: synthesized engine drone + tire screech
 
@@ -652,6 +680,13 @@ they get closer. Use `[`/`]` to retune `parallax_scale` for comfort
 during actual play (it may want to differ from the static test scene's
 value) and `S` to save it.
 
+Also confirm Reset with the actual exhibit hardware: whether the
+gamepad's Select/Back button is recognized at all (an unrecognized pad
+just means gamepad Reset silently doesn't fire -- `Backspace` still
+works as a fallback either way), whether holding it for ~1s feels right
+for the booth, and whether the brief "RESET" flash reads clearly through
+both lenses.
+
 ## Project layout
 
 ```
@@ -676,6 +711,9 @@ bgm/                     the three BGM tracks music.py loads (mp3,
                         committed -- original, user-supplied audio)
 sfx.py                   synthesized engine drone + tire screech sound
                         effects (numpy + pygame.sndarray; no audio files)
+input_reset.py            shared Reset input plumbing (Select/Back
+                        gamepad hold-to-reset tracking, safe gamepad
+                        open) used by both music.py and game.py
 config.py                Config/Rect dataclasses, JSON load/save, clamping
 config.json               real-hardware-verified calibration + disparity
                         safety settings (committed)
