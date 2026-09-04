@@ -10,10 +10,13 @@ ordinary left-eye/right-eye images on a normal HDMI LCD; the accessory's
 lenses and red filter are what the player looks through.
 
 No original Nintendo/Virtual Boy names, logos, characters, vehicles,
-artwork, or music are used or planned. All visuals are original geometric
-placeholders (rectangles, lines, circles) until real original art exists.
-The BGM (see "Music selection" below) is likewise original, user-supplied
-audio, unrelated to any Virtual Boy/Nintendo music.
+artwork, or music are used or planned. Everything is original: most
+visuals are still geometric placeholders (rectangles, lines, circles),
+and the player's own car (see "Player car sprites" below) is original
+generated pixel art -- a wedge-shaped sports car silhouette, not any
+real or existing vehicle design. The BGM (see "Music selection" below)
+is likewise original, user-supplied audio, unrelated to any Virtual
+Boy/Nintendo music.
 
 ## Current status
 
@@ -819,6 +822,63 @@ Together they turn "the road is diagonal, the car isn't" into "we're
 banking into the curve" -- see `docs/PHASE2_RACE_LOG.md` for the request
 that prompted this and how it was verified.
 
+### Player car sprites (2026-09-05)
+
+The player's own car (traffic cars are unchanged, still `draw_car()`'s
+flat rectangle -- explicitly out of scope for this pass) is now 5
+original, red/black pixel-art poses instead of a plain rectangle:
+`hard_left`, `left`, `straight`, `right`, `hard_right`
+(`assets/cars/player/player_*.png`, 64x48px, transparent background).
+No image-generation tool was available, so per this project's
+"everything is generated" approach (see the Sound effects section for
+the same philosophy applied to audio),
+`assets/cars/player/generate_placeholder_sprites.py` builds them with
+plain pygame `Surface.fill()` rects on a 16x12 "native pixel" grid (no
+antialiasing at all, and never scaled at runtime, so there's nothing for
+"use nearest-neighbor when scaling" to even apply to) -- rerun it to
+regenerate them. `left`/`hard_left` are `pygame.transform.flip()` of
+`right`/`hard_right`, not separately authored. A rear 3/4 "turn" pose is
+approximated by shearing each row's span sideways, more at the bottom
+(tail) than the top (roof, near the implied pivot) -- a deliberately
+simple stand-in for true 3D rotation, appropriate for small placeholder
+art; whether the lean actually reads as "turning that way" through the
+lenses is a real-hardware call this session can't make.
+
+All 5 share one canvas size and one anchor point
+(`PLAYER_SPRITE_ANCHOR`, bottom-center) in `game.py`, so switching
+poses can't move the tire contact point or body centerline -- the same
+`(cx, cy)` this project's placeholder rectangle already computed (car
+lean, road-elevation bob, and all) is reused unchanged; only *what* gets
+blitted at that point changed. Missing/broken PNGs degrade to the
+original `draw_car()` rectangle rather than crashing or drawing nothing
+(same "missing asset never crashes the game" philosophy as `music.py`/
+`sfx.py`).
+
+**Pose selection** comes from a single, unified -1..1 "how hard is the
+player steering right now" value (`gamepad.read_steer()`'s combined
+keyboard+D-pad+analog-stick input, the same one physics already used --
+sprite selection is read-only with respect to it, so switching poses
+can never itself change `player.x` or trigger a collision):
+
+| `steering` | Pose |
+|---|---|
+| -1.0 to -0.55 | `hard_left` |
+| -0.55 to -0.15 | `left` |
+| -0.15 to +0.15 | `straight` |
+| +0.15 to +0.55 | `right` |
+| +0.55 to +1.0 | `hard_right` |
+
+Two mechanisms keep the pose from flickering at a boundary, both
+requested explicitly: the raw `steering` value is smoothed over time
+(`PLAYER_VISUAL_STEER_SMOOTHING`, a separate value from the physics
+steer -- keyboard/D-pad's instant +-1 "snap" ramps gradually through
+the poses instead of jumping straight to hard_left/hard_right), and the
+category boundaries themselves have a small hysteresis margin
+(`PLAYER_SPRITE_HYSTERESIS`) so a value sitting right at -0.55 can't
+toggle the sprite every frame. The `D` debug overlay shows the live
+`steering` value and selected pose name, specifically so this can be
+checked against the actual left/right direction on real hardware.
+
 ### Road elevation: hills, a crest, and a valley
 
 Added on top of the existing left/right curve system, not a replacement
@@ -998,7 +1058,11 @@ config.example.json       original placeholder defaults (committed)
 requirements.txt          runtime dependencies (pygame, numpy)
 requirements-dev.txt       + pytest, for running tests/
 tests/                    automated tests (headless, SDL dummy driver)
-assets/                   placeholder for future art (empty for now)
+assets/cars/player/       the player car's 5-pose pixel art (2026-09-05)
+                        + generate_placeholder_sprites.py, the pygame-
+                        drawing script that made them (rerun to
+                        regenerate). Traffic cars are unchanged/still
+                        procedural -- out of scope for this pass.
 docs/                     working log + NEXT_STEPS.md handoff (Japanese)
 ```
 

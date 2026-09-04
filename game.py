@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import math
 import random
+from pathlib import Path
 
 import pygame
 
@@ -115,6 +116,77 @@ PLAYER_X_LIMIT = 2.2
 BG_SHIFT_SCALE = 110.0    # px of background pan at full curve + full speed
 BG_SHIFT_SMOOTHING = 6.0  # higher = pan reacts to curve changes faster
 CAR_LEAN_SCALE = 11.0     # px the player car sprite nudges toward the turn
+
+# -- Player car sprites (2026-09-05) -----------------------------------------
+# 5-pose placeholder pixel art (see assets/cars/player/) replacing the flat
+# rectangle draw_car() drew for the player specifically -- traffic cars are
+# explicitly out of scope for this pass and still use draw_car(). Canvas
+# size and anchor point are shared by all 5 PNGs (see
+# generate_placeholder_sprites.py's CANVAS_SIZE/ANCHOR, mirrored here rather
+# than imported since that script is a one-off asset-authoring tool, not a
+# runtime dependency) -- ANCHOR is where each sprite's "ground contact,
+# horizontal center" point sits within its own canvas, so blitting every
+# sprite with that same offset from (cx, cy) is what keeps the tire contact
+# point and body centerline from jumping when the sprite changes.
+PLAYER_ASSETS_DIR = Path(__file__).resolve().parent / "assets" / "cars" / "player"
+PLAYER_SPRITE_KEYS = ("hard_left", "left", "straight", "right", "hard_right")
+PLAYER_SPRITE_CANVAS_SIZE = (64, 48)
+PLAYER_SPRITE_ANCHOR = (32, 48)  # bottom-center
+
+# The single, unified -1..1 "how hard is the player steering right now"
+# value (keyboard + gamepad combined -- see update()) that picks a sprite.
+# Boundaries requested as: -1..-0.55 hard_left, -0.55..-0.15 left,
+# -0.15..+0.15 straight, +0.15..+0.55 right, +0.55..+1 hard_right.
+PLAYER_SPRITE_THRESHOLDS = (-0.55, -0.15, 0.15, 0.55)
+# Extra margin required to cross back over a boundary once already on its
+# far side, so a value sitting right at a boundary can't flicker the
+# sprite every frame -- combined with PLAYER_VISUAL_STEER_SMOOTHING below
+# (which itself already keeps the value from jumping instantly), this is
+# the "hysteresis" the spec asks for in addition to the smoothing.
+PLAYER_SPRITE_HYSTERESIS = 0.05
+# How fast the *visual* steering value chases the actual (instantaneous)
+# combined input -- deliberately separate from STEER_RATE/the physics
+# steer value: this only ever affects which of the 5 sprites is drawn,
+# never player.x or collision, so sprite switching can never itself change
+# where the car actually is. Keyboard/D-pad's digital +-1 "snap" is what
+# this smooths into a gradual sprite progression, per the spec ("押した
+# 瞬間に最大角度へ切り替えず、短時間で段階的に変化させる").
+PLAYER_VISUAL_STEER_SMOOTHING = 6.0  # 1/s
+
+
+_player_sprites_cache: dict = {"loaded": False, "sprites": {}}
+
+
+def _load_player_sprites() -> dict[str, pygame.Surface]:
+    """Loads+caches the 5 PNGs once per process (not once per Game --
+    Game gets re-constructed on every Restart-via-Reset, and re-decoding
+    5 PNGs from disk each time would be wasteful). Returns {} (not a
+    partial dict) if any file is missing/unreadable, so a broken asset
+    can't leave some poses using placeholder art and others not --
+    _draw_player_car falls back to the original draw_car() rectangle
+    for *all* poses in that case, matching this project's established
+    "missing asset degrades gracefully, never crashes" philosophy (see
+    music.py/sfx.py)."""
+    if _player_sprites_cache["loaded"]:
+        return _player_sprites_cache["sprites"]
+    sprites: dict[str, pygame.Surface] = {}
+    try:
+        for key in PLAYER_SPRITE_KEYS:
+            path = PLAYER_ASSETS_DIR / f"player_{key}.png"
+            surf = pygame.image.load(str(path)).convert_alpha()
+            if surf.get_size() != PLAYER_SPRITE_CANVAS_SIZE:
+                # A mismatched canvas would break the shared-anchor
+                # guarantee every other sprite relies on -- refuse the
+                # whole set rather than risk the car jumping on switch.
+                sprites = {}
+                break
+            sprites[key] = surf
+    except (pygame.error, FileNotFoundError, OSError):
+        sprites = {}
+    _player_sprites_cache["sprites"] = sprites
+    _player_sprites_cache["loaded"] = True
+    return sprites
+
 
 # -- Road elevation (hills) -------------------------------------------------
 # Vertical companion to CAMERA_HEIGHT/project() below: each segment now
@@ -266,6 +338,9 @@ class Game:
         self.current_curve = 0.0
         self.cam_elevation = 0.0  # smoothed camera road-height reference
         self.player_bob = 0.0     # smoothed player-car vertical nudge (px)
+        self.player_visual_steer = 0.0  # smoothed sprite-selection input, see update()
+        self._player_sprite_index = PLAYER_SPRITE_KEYS.index("straight")
+        self._player_sprites = _load_player_sprites()
         self._road_base_idx = 0
         self._road_clip_before_n: list[float] = []  # crest occlusion, see _draw_road
 
@@ -422,6 +497,31 @@ class Game:
             TIRE_SCREECH_PRESET_ORDER, self.tire_screech.preset_name, self.tire_screech.set_preset, "TIRE"
         )
 
+    def _update_player_sprite_index(self, value: float) -> None:
+        """Picks which of PLAYER_SPRITE_KEYS to draw from the (already
+        time-smoothed, see update()) visual steering value, with
+        hysteresis: once at index `i`, `value` must clear the boundary
+        toward a neighboring index by PLAYER_SPRITE_HYSTERESIS (not just
+        touch it) before that neighbor is selected -- stops the sprite
+        flickering back and forth for a value sitting right at a
+        boundary. In normal play `value` only ever changes gradually
+        (it's already smoothed, so consecutive frames rarely cross more
+        than one boundary), but this still walks multiple steps in one
+        call if it ever needs to, so an unusually large single-frame
+        jump can't strand the sprite in the wrong category."""
+        idx = self._player_sprite_index
+        max_idx = len(PLAYER_SPRITE_KEYS) - 1
+        while True:
+            lower = PLAYER_SPRITE_THRESHOLDS[idx - 1] - PLAYER_SPRITE_HYSTERESIS if idx > 0 else -2.0
+            upper = PLAYER_SPRITE_THRESHOLDS[idx] + PLAYER_SPRITE_HYSTERESIS if idx < max_idx else 2.0
+            if value < lower and idx > 0:
+                idx -= 1
+            elif value > upper and idx < max_idx:
+                idx += 1
+            else:
+                break
+        self._player_sprite_index = idx
+
     def _restart(self) -> None:
         self.player = Player()
         self.time_left = RACE_TIME
@@ -432,6 +532,8 @@ class Game:
         self.traffic = self._build_traffic()
         self.cam_elevation = 0.0
         self.player_bob = 0.0
+        self.player_visual_steer = 0.0
+        self._player_sprite_index = PLAYER_SPRITE_KEYS.index("straight")
 
     def _trigger_reset(self) -> None:
         """The Maker Faire "next visitor" Reset, as opposed to _restart()
@@ -497,6 +599,19 @@ class Game:
                 steer += 1.0
             steer = max(-1.0, min(1.0, steer + read_steer(gamepad)))
             self.player.x += steer * STEER_RATE * speed_frac * dt
+
+            # Sprite selection only -- deliberately never touches
+            # player.x/collision (see PLAYER_VISUAL_STEER_SMOOTHING's
+            # comment): smooths the same combined keyboard+gamepad
+            # `steer` used for physics above into a separate value that
+            # drifts toward it over time instead of snapping, so a
+            # keyboard/D-pad digital +-1 press ramps through the sprite
+            # progression rather than jumping straight to hard_left/
+            # hard_right.
+            self.player_visual_steer += (
+                (steer - self.player_visual_steer) * min(1.0, PLAYER_VISUAL_STEER_SMOOTHING * dt)
+            )
+            self._update_player_sprite_index(self.player_visual_steer)
 
             # Interpolated, not the coarse per-segment value: during a
             # curve, consecutive segments' curve/world_x can differ by a
@@ -778,7 +893,15 @@ class Game:
         # pinned near the bottom of the screen, it doesn't move by the
         # same amount as the road itself.
         cy = h - 34 + self.player_bob
-        draw_car(surf, cx, cy, 1.0, PLAYER_COLOR)
+        sprite_key = PLAYER_SPRITE_KEYS[self._player_sprite_index]
+        sprite = self._player_sprites.get(sprite_key)
+        if sprite is not None:
+            anchor_x, anchor_y = PLAYER_SPRITE_ANCHOR
+            surf.blit(sprite, (cx - anchor_x, cy - anchor_y))
+        else:
+            # Missing/broken sprite files -- fall back to the original
+            # placeholder rectangle rather than drawing nothing.
+            draw_car(surf, cx, cy, 1.0, PLAYER_COLOR)
 
     def _draw_hud(self, surf: pygame.Surface, ox: float) -> None:
         w, h = surf.get_size()
@@ -826,6 +949,9 @@ class Game:
             f"  tire_screech: {'on' if self.tire_screech.available else 'unavailable'}"
             f" preset={self.tire_screech.preset_name}(T)"
             f" playing={pygame.mixer.Channel(self.tire_screech.CHANNEL).get_busy() if self.tire_screech.available else False}",
+            f"player sprite: steer={self.player_visual_steer:+.2f}"
+            f" -> {PLAYER_SPRITE_KEYS[self._player_sprite_index]}"
+            f"  (assets {'loaded' if self._player_sprites else 'MISSING, using placeholder rect'})",
         ]
         # Only shown when something's actually wrong -- see sfx.py's
         # unavailable_reason: exactly the "is it a trigger bug or a

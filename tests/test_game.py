@@ -17,6 +17,23 @@ from road import HILL_START, SEGMENT_LENGTH, elevation_at
 from sfx import ENGINE_PRESET_ORDER, TIRE_SCREECH_PRESET_ORDER
 
 BGM_ASSETS_PRESENT = BGM_DIR.is_dir() and any(BGM_DIR.glob("*.mp3"))
+PLAYER_SPRITE_ASSETS_PRESENT = all(
+    (game.PLAYER_ASSETS_DIR / f"player_{key}.png").is_file() for key in game.PLAYER_SPRITE_KEYS
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_player_sprite_cache():
+    # game._load_player_sprites() caches at module level (deliberately,
+    # so repeated Game() construction across Restart/Reset doesn't
+    # re-decode 5 PNGs from disk every time) -- reset it before every
+    # test so one test poisoning it (e.g. simulating missing assets)
+    # can't leak into another.
+    game._player_sprites_cache["loaded"] = False
+    game._player_sprites_cache["sprites"] = {}
+    yield
+    game._player_sprites_cache["loaded"] = False
+    game._player_sprites_cache["sprites"] = {}
 
 
 class FakeKeys(dict):
@@ -776,4 +793,245 @@ def test_a_button_press_does_not_restart_the_race():
     event = pygame.event.Event(pygame.CONTROLLERBUTTONDOWN, button=pygame.CONTROLLER_BUTTON_A, instance_id=0)
     g._handle_controller_button_down(event)
     assert g.score == 500.0
+    pygame.quit()
+
+
+# -- player car sprites (2026-09-05) ----------------------------------------
+# Real-hardware verification (does the sprite actually look like the
+# intended direction, does the shear read clearly through the lenses) is
+# out of reach here -- see docs/PHASE2_RACE_LOG.md. These check the
+# selection logic, the anchor/canvas invariants that keep the car from
+# jumping when the sprite changes, and that switching sprites never
+# touches physics/collision state.
+
+
+def _settle(g, keys=None, gamepad=None, seconds=2.0, dt=1 / 60):
+    """Steps update() long enough for the smoothed player_visual_steer
+    (and therefore the sprite category) to settle -- mirrors test_sfx.py's
+    _run_to_target for engine RPM. Real gameplay never snaps the sprite
+    straight to a category; tests that need a settled state simulate
+    enough elapsed time instead of poking internal state directly."""
+    keys = keys if keys is not None else _keys()
+    for _ in range(max(1, int(seconds / dt))):
+        g.update(dt, keys, gamepad)
+
+
+def test_player_sprite_defaults_to_straight():
+    g = _make_game()
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "straight"
+    pygame.quit()
+
+
+def test_player_sprite_switches_to_hard_left_holding_keyboard_left():
+    g = _make_game()
+    _settle(g, keys=_keys(LEFT=True))
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "hard_left"
+    pygame.quit()
+
+
+def test_player_sprite_switches_to_hard_right_holding_keyboard_right():
+    g = _make_game()
+    _settle(g, keys=_keys(RIGHT=True))
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "hard_right"
+    pygame.quit()
+
+
+def test_player_sprite_returns_to_straight_when_input_released():
+    g = _make_game()
+    _settle(g, keys=_keys(LEFT=True))
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "hard_left"
+    _settle(g, keys=_keys())  # release
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "straight"
+    pygame.quit()
+
+
+def test_player_sprite_switches_to_hard_left_via_dpad():
+    g = _make_game()
+    gamepad = FakeController(buttons={pygame.CONTROLLER_BUTTON_DPAD_LEFT})
+    _settle(g, gamepad=gamepad)
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "hard_left"
+    pygame.quit()
+
+
+def test_player_sprite_switches_to_hard_right_via_dpad():
+    g = _make_game()
+    gamepad = FakeController(buttons={pygame.CONTROLLER_BUTTON_DPAD_RIGHT})
+    _settle(g, gamepad=gamepad)
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "hard_right"
+    pygame.quit()
+
+
+def test_player_sprite_mild_left_via_partial_analog_stick():
+    # A partial deflection (not full-left) should settle in the "left"
+    # category, not "hard_left" -- this is the case only the analog
+    # stick (not keyboard/D-pad, both purely digital +-1) can reach.
+    g = _make_game()
+    gamepad = FakeController(axes={pygame.CONTROLLER_AXIS_LEFTX: -13000})  # ~ -0.40
+    _settle(g, gamepad=gamepad)
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "left"
+    pygame.quit()
+
+
+def test_player_sprite_mild_right_via_partial_analog_stick():
+    g = _make_game()
+    gamepad = FakeController(axes={pygame.CONTROLLER_AXIS_LEFTX: 13000})  # ~ +0.40
+    _settle(g, gamepad=gamepad)
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "right"
+    pygame.quit()
+
+
+def test_player_sprite_hard_left_via_full_analog_stick_deflection():
+    g = _make_game()
+    gamepad = FakeController(axes={pygame.CONTROLLER_AXIS_LEFTX: -32768})
+    _settle(g, gamepad=gamepad)
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "hard_left"
+    pygame.quit()
+
+
+def test_player_sprite_straight_within_deadzone():
+    g = _make_game()
+    gamepad = FakeController(axes={pygame.CONTROLLER_AXIS_LEFTX: 2000})  # well under the deadzone
+    _settle(g, gamepad=gamepad)
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "straight"
+    pygame.quit()
+
+
+def test_player_sprite_index_does_not_flicker_at_a_boundary():
+    # A value oscillating right at the hard_left/left boundary (-0.55)
+    # must not flip the sprite back and forth every call -- the
+    # hysteresis margin (PLAYER_SPRITE_HYSTERESIS) requires clearing the
+    # boundary by more than a hair to actually switch.
+    g = _make_game()
+    g._player_sprite_index = game.PLAYER_SPRITE_KEYS.index("left")
+    seen = set()
+    for _ in range(20):
+        g._update_player_sprite_index(-0.551)  # just past the nominal boundary
+        seen.add(g._player_sprite_index)
+        g._update_player_sprite_index(-0.549)  # just short of it again
+        seen.add(g._player_sprite_index)
+    # Without hysteresis this would toggle between "left" and "hard_left"
+    # on every call; with it, it should stay put.
+    assert len(seen) == 1
+    pygame.quit()
+
+
+def test_player_sprite_index_handles_a_large_single_frame_jump():
+    # Not the normal case (the smoothed value changes gradually), but the
+    # category-resolution logic must still land on the *correct* category
+    # rather than only moving one step, if it's ever called with a big jump.
+    g = _make_game()
+    g._player_sprite_index = game.PLAYER_SPRITE_KEYS.index("hard_left")
+    g._update_player_sprite_index(0.9)
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "hard_right"
+    pygame.quit()
+
+
+def test_player_sprite_selection_does_not_change_player_x_or_collision():
+    # Sprite selection must be read-only with respect to physics --
+    # steering (and therefore player.x / collision) must come out
+    # identical whether or not sprite assets are available.
+    def run_with(sprites_available):
+        g = _make_game()
+        if not sprites_available:
+            g._player_sprites = {}
+        keys = _keys(UP=True, RIGHT=True)
+        for _ in range(180):
+            g.update(1 / 60, keys)
+        return g.player.x, g.player.z, g.player.speed, g.collision_cooldown
+
+    with_sprites = run_with(True)
+    without_sprites = run_with(False)
+    assert with_sprites == without_sprites
+    pygame.quit()
+
+
+@pytest.mark.skipif(not PLAYER_SPRITE_ASSETS_PRESENT, reason="player sprite PNGs not present")
+def test_all_five_player_sprites_share_the_same_canvas_size():
+    # _load_player_sprites() needs an active display surface for
+    # .convert_alpha() -- _make_game() sets one up (a call with none
+    # active degrades to the "missing assets" fallback rather than
+    # raising, per this module's usual philosophy, which is exactly
+    # what silently broke this test before it called _make_game() first).
+    g = _make_game()
+    sprites = g._player_sprites
+    assert set(sprites.keys()) == set(game.PLAYER_SPRITE_KEYS)
+    sizes = {surf.get_size() for surf in sprites.values()}
+    assert sizes == {game.PLAYER_SPRITE_CANVAS_SIZE}
+    pygame.quit()
+
+
+@pytest.mark.skipif(not PLAYER_SPRITE_ASSETS_PRESENT, reason="player sprite PNGs not present")
+def test_player_sprites_load_successfully_and_draw_without_crashing():
+    g = _make_game()
+    assert g._player_sprites  # non-empty -- assets loaded, not the fallback
+    g._draw()  # must not crash
+    pygame.quit()
+
+
+def test_missing_player_sprite_files_falls_back_to_the_placeholder_rect(monkeypatch, tmp_path):
+    monkeypatch.setattr(game, "PLAYER_ASSETS_DIR", tmp_path)  # empty dir, no PNGs there
+    g = _make_game()
+    assert g._player_sprites == {}
+    g._draw()  # must not crash -- falls back to draw_car()
+    pygame.quit()
+
+
+def test_player_sprite_cache_is_shared_across_game_instances():
+    g1 = _make_game()
+    assert game._player_sprites_cache["loaded"] is True
+    g2 = game.Game(default_config(), screen=g1.screen, renderer=g1.renderer)
+    assert g2._player_sprites is g1._player_sprites  # same dict object, not re-loaded
+    pygame.quit()
+
+
+def test_draw_does_not_mutate_player_sprite_selection():
+    # renderer.draw_world calls _draw_player_car once per eye -- both
+    # calls must use the same sprite (StereoRenderer only applies
+    # horizontal disparity, see its own docstring), so drawing must never
+    # itself change which sprite is selected.
+    g = _make_game()
+    _settle(g, keys=_keys(LEFT=True))
+    index_before = g._player_sprite_index
+    g._draw()  # draws both eyes
+    assert g._player_sprite_index == index_before
+    pygame.quit()
+
+
+def test_restart_resets_player_sprite_to_straight():
+    g = _make_game()
+    _settle(g, keys=_keys(RIGHT=True))
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] != "straight"
+    g._restart()
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "straight"
+    assert g.player_visual_steer == 0.0
+    pygame.quit()
+
+
+def test_trigger_reset_resets_player_sprite_to_straight():
+    g = _make_game()
+    _settle(g, keys=_keys(LEFT=True))
+    g._trigger_reset()
+    assert game.PLAYER_SPRITE_KEYS[g._player_sprite_index] == "straight"
+    pygame.quit()
+
+
+def test_player_car_still_bobs_with_road_elevation_using_sprites():
+    # Regression check for "坂道で既に実装されているプレイヤー車の上下動にも
+    # 追従させてください" -- _draw_player_car's cy must still include
+    # player_bob after switching to sprite drawing.
+    g = _make_game()
+    g.player.speed = game.MAX_SPEED
+    for idx in range(HILL_START - 10, HILL_START + 100, 10):
+        g.player.z = idx * SEGMENT_LENGTH
+        g.update(1 / 60, _keys())
+        g._draw()  # must not crash at any point along the hill
+    assert g.player_bob != 0.0  # sanity: the hill actually produced some bob
+    pygame.quit()
+
+
+def test_debug_overlay_shows_steering_value_and_sprite_name():
+    g = _make_game()
+    _settle(g, keys=_keys(RIGHT=True))
+    g.show_debug = True
+    g._draw()  # must not crash while the overlay is showing
     pygame.quit()
