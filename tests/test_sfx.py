@@ -18,6 +18,9 @@ from sfx import (
     ENGINE_DEFAULT_PRESET,
     ENGINE_PRESET_ORDER,
     ENGINE_PRESETS,
+    TIRE_SCREECH_DEFAULT_PRESET,
+    TIRE_SCREECH_PRESET_ORDER,
+    TIRE_SCREECH_PRESETS,
     TIRE_SCREECH_THRESHOLD,
     EngineSound,
     TireScreech,
@@ -112,13 +115,33 @@ def test_render_engine_preview_returns_the_requested_duration():
     assert samples.min() >= -1.0
 
 
-def test_tire_screech_wave_is_normalized_and_nonzero():
+def test_tire_screech_presets_are_defined_and_consistent():
+    assert set(TIRE_SCREECH_PRESET_ORDER) == set(TIRE_SCREECH_PRESETS.keys())
+    assert len(TIRE_SCREECH_PRESET_ORDER) == 3
+    assert TIRE_SCREECH_DEFAULT_PRESET in TIRE_SCREECH_PRESETS
+    for preset in TIRE_SCREECH_PRESETS.values():
+        assert preset.duration_s > 0
+        assert preset.tone_center_hz > 0
+
+
+@pytest.mark.parametrize("preset_name", TIRE_SCREECH_PRESET_ORDER)
+def test_tire_screech_wave_is_normalized_and_nonzero(preset_name):
     _init()
     rng = np.random.default_rng(1)
-    wave = _tire_screech_wave(44100, rng)
+    wave = _tire_screech_wave(44100, rng, TIRE_SCREECH_PRESETS[preset_name])
     assert wave.max() <= 1.0
     assert wave.min() >= -1.0
     assert wave.max() > 0.1  # not silent
+
+
+def test_render_tire_screech_preview_returns_the_requested_duration():
+    _init()
+    preset = TIRE_SCREECH_PRESETS[TIRE_SCREECH_DEFAULT_PRESET]
+    sample_rate = 44100
+    samples = sfx.render_tire_screech_preview(preset, sample_rate, duration_s=1.5)
+    assert len(samples) == int(1.5 * sample_rate)
+    assert samples.max() <= 1.0
+    assert samples.min() >= -1.0
 
 
 def test_engine_sound_is_available_when_mixer_is_initialized():
@@ -261,6 +284,71 @@ def test_tire_screech_is_available_when_mixer_is_initialized():
     _init()
     t = TireScreech()
     assert t.available is True
+    assert set(t._sounds_by_preset.keys()) == set(TIRE_SCREECH_PRESET_ORDER)
+    pygame.quit()
+
+
+def test_tire_screech_defaults_to_the_default_preset():
+    _init()
+    t = TireScreech()
+    assert t.preset_name == TIRE_SCREECH_DEFAULT_PRESET
+    pygame.quit()
+
+
+def test_tire_screech_set_preset_switches_the_active_preset():
+    _init()
+    t = TireScreech()
+    other = next(name for name in TIRE_SCREECH_PRESET_ORDER if name != t.preset_name)
+    t.set_preset(other)
+    assert t.preset_name == other
+    pygame.quit()
+
+
+def test_tire_screech_set_preset_ignores_an_unknown_name():
+    _init()
+    t = TireScreech()
+    before = t.preset_name
+    t.set_preset("NOT A REAL PRESET")
+    assert t.preset_name == before
+    pygame.quit()
+
+
+def test_tire_screech_set_preset_to_the_current_preset_is_a_noop():
+    _init()
+    t = TireScreech()
+    before = t.preset_name
+    t.set_preset(t.preset_name)
+    assert t.preset_name == before
+    pygame.quit()
+
+
+def test_tire_screech_next_trigger_uses_the_newly_selected_preset():
+    _init()
+    t = TireScreech()
+    other = next(name for name in TIRE_SCREECH_PRESET_ORDER if name != t.preset_name)
+    t.set_preset(other)
+    channel = pygame.mixer.Channel(TireScreech.CHANNEL)
+    t.update(1.0, active=True)
+    assert channel.get_sound() is t._sounds_by_preset[other]
+    pygame.quit()
+
+
+def test_tire_screech_play_now_plays_the_current_preset_immediately():
+    _init()
+    t = TireScreech()
+    channel = pygame.mixer.Channel(TireScreech.CHANNEL)
+    t.play_now()
+    assert channel.get_busy() is True
+    assert channel.get_sound() is t._sounds_by_preset[t.preset_name]
+    pygame.quit()
+
+
+def test_tire_screech_play_now_is_a_noop_when_unavailable(monkeypatch):
+    _init()
+    monkeypatch.setattr(sfx, "np", None)
+    t = TireScreech()
+    assert t.available is False
+    t.play_now()  # must not raise
     pygame.quit()
 
 

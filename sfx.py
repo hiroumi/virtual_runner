@@ -176,22 +176,83 @@ SPEED_LEVELS: dict[str, float] = {
 # essentially any real cornering, without being permanently on through the
 # straights. See docs/PHASE2_RACE_LOG.md for the full numbers.
 TIRE_SCREECH_THRESHOLD = 0.05
-TIRE_SCREECH_SECONDS = 0.35
 TIRE_SCREECH_FADE_MS = 120
-# 2026-09-04 (second pass, see the engine's history above): raised to
-# 1.0/2.4 after "still barely audible" feedback -- which, like the
-# engine's second pass, turned out to be chasing a real trigger bug (the
-# SFX weren't playing at all on that machine yet), not an actual loudness
-# ceiling. Rolled back to the first pass's 0.8/1.6 once the real bug was
-# fixed and the SFX turned out to be too loud/harsh at the maxed-out
-# settings ("ちょっとうるさい"). Simulated RMS 0.319, peak 0.9. Left
-# untouched by the fifth-pass engine redesign -- only the engine's
-# waveform/character was reported as wrong; tire screech is explicitly
-# out of scope for that change.
-TIRE_SCREECH_VOLUME = 0.8
-TIRE_SCREECH_SATURATION_DRIVE = 1.6  # gentler than the engine's -- too much
-                                      # saturation flattens the noise into
-                                      # featureless static instead of a screech
+# 2026-09-04 (tenth pass): with the trigger frequency confirmed good
+# ("このくらいでいいですよ"), attention moved to the screech's own sound --
+# asked for several waveform patterns to compare, mirroring the engine's
+# A/B/C preset approach. TIRE_SCREECH_SECONDS/VOLUME/SATURATION_DRIVE
+# (single values, first tuned 2026-09-04 second pass -- see the earlier
+# history that used to live on this line) are now per-preset fields
+# (duration_s/volume/saturation_drive below) instead of module constants;
+# THRESHOLD and FADE_MS stay shared/global since they govern *when* a
+# screech triggers (gameplay feel), not what it sounds like.
+
+
+@dataclass(frozen=True)
+class TireScreechPreset:
+    """One tire-screech synthesis recipe: noise + two vibrato'd resonant
+    tones (see _tire_screech_wave), same ingredients as the original
+    single implementation, now parametrized per preset. noise_weight/
+    tone_weight/tone2_weight aren't required to sum to 1 -- the mix is
+    peak-normalized afterward, same as the original recipe was."""
+
+    name: str
+    duration_s: float
+    noise_weight: float
+    tone_center_hz: float
+    tone_vibrato_depth_hz: float
+    tone_vibrato_rate_hz: float
+    tone_weight: float
+    tone2_ratio: float          # second tone's frequency, as a multiple of the first
+    tone2_weight: float
+    attack_s: float
+    release_s: float
+    saturation_drive: float
+    volume: float
+
+
+TIRE_SCREECH_PRESETS: dict[str, TireScreechPreset] = {
+    "CLASSIC SQUEAL": TireScreechPreset(
+        # The original (pre-preset) recipe, kept as the baseline.
+        name="CLASSIC SQUEAL",
+        duration_s=0.35,
+        noise_weight=0.5,
+        tone_center_hz=1900.0, tone_vibrato_depth_hz=220.0, tone_vibrato_rate_hz=11.0,
+        tone_weight=0.35,
+        tone2_ratio=1.5, tone2_weight=0.25,
+        attack_s=0.02, release_s=0.08,
+        saturation_drive=1.6,
+        volume=0.8,
+    ),
+    "GRIP SLIDE": TireScreechPreset(
+        # Noise-dominant and pitched much lower -- reads more like rubber
+        # grinding on asphalt than a high squeal.
+        name="GRIP SLIDE",
+        duration_s=0.4,
+        noise_weight=0.75,
+        tone_center_hz=900.0, tone_vibrato_depth_hz=120.0, tone_vibrato_rate_hz=7.0,
+        tone_weight=0.2,
+        tone2_ratio=1.3, tone2_weight=0.15,
+        attack_s=0.03, release_s=0.12,
+        saturation_drive=1.3,
+        volume=0.8,
+    ),
+    "ARCADE CHIRP": TireScreechPreset(
+        # Short, bright, tone-dominant -- a quick high "eeee!" chirp
+        # rather than a sustained squeal, closer to classic arcade racers.
+        name="ARCADE CHIRP",
+        duration_s=0.22,
+        noise_weight=0.3,
+        tone_center_hz=2600.0, tone_vibrato_depth_hz=300.0, tone_vibrato_rate_hz=15.0,
+        tone_weight=0.45,
+        tone2_ratio=1.6, tone2_weight=0.35,
+        attack_s=0.01, release_s=0.05,
+        saturation_drive=1.8,
+        volume=0.85,
+    ),
+}
+TIRE_SCREECH_PRESET_ORDER = ["CLASSIC SQUEAL", "GRIP SLIDE", "ARCADE CHIRP"]
+TIRE_SCREECH_DEFAULT_PRESET = "CLASSIC SQUEAL"
 
 
 def _mixer_format():
@@ -219,7 +280,7 @@ def _soft_clip(x: "np.ndarray", drive: float) -> "np.ndarray":
     without pushing the peak past it or hard-clipping into crackle. Used
     as a gentle peak-safety net on the engine (low drive, see
     EnginePreset.saturation_drive) and as the tire screech's primary
-    loudness tool (higher drive, see TIRE_SCREECH_SATURATION_DRIVE)."""
+    loudness tool (higher drive, see TireScreechPreset.saturation_drive)."""
     return np.tanh(x * drive) / math.tanh(drive)
 
 
@@ -343,26 +404,32 @@ def render_engine_preview(
     return tiled[:total_samples]
 
 
-def _tire_screech_wave(sample_rate: int, rng: "np.random.Generator") -> "np.ndarray":
+def _tire_screech_wave(
+    sample_rate: int, rng: "np.random.Generator", preset: TireScreechPreset,
+) -> "np.ndarray":
     """Noise-based screech: high-passed noise (first difference removes the
     low-frequency rumble that would otherwise read as engine/road noise,
     not tire squeal) mixed with a couple of vibrato'd resonant tones for
-    an "eeee" character, shaped by a quick-attack/gentle-release envelope."""
-    n = max(1, int(round(TIRE_SCREECH_SECONDS * sample_rate)))
+    an "eeee" character, shaped by a quick-attack/gentle-release envelope.
+    Pitch, noise/tone balance, duration, and envelope all come from
+    `preset` -- see TIRE_SCREECH_PRESETS."""
+    n = max(1, int(round(preset.duration_s * sample_rate)))
     t = np.arange(n) / sample_rate
 
     noise = rng.uniform(-1.0, 1.0, n)
     noise = np.diff(noise, prepend=noise[0])
 
-    vibrato_hz = 1900.0 + 220.0 * np.sin(2 * math.pi * 11.0 * t)
+    vibrato_hz = preset.tone_center_hz + preset.tone_vibrato_depth_hz * np.sin(
+        2 * math.pi * preset.tone_vibrato_rate_hz * t
+    )
     phase = 2 * math.pi * np.cumsum(vibrato_hz) / sample_rate
     tone = np.sin(phase)
-    tone2 = np.sin(phase * 1.5)
+    tone2 = np.sin(phase * preset.tone2_ratio)
 
-    mix = 0.5 * noise + 0.35 * tone + 0.25 * tone2
+    mix = preset.noise_weight * noise + preset.tone_weight * tone + preset.tone2_weight * tone2
 
-    attack = max(1, int(0.02 * sample_rate))
-    release = max(1, int(0.08 * sample_rate))
+    attack = max(1, int(preset.attack_s * sample_rate))
+    release = max(1, int(preset.release_s * sample_rate))
     env = np.ones(n)
     env[:attack] = np.linspace(0.0, 1.0, attack)
     env[-release:] = np.linspace(1.0, 0.0, release)
@@ -371,8 +438,23 @@ def _tire_screech_wave(sample_rate: int, rng: "np.random.Generator") -> "np.ndar
     peak = np.max(np.abs(mix))
     if peak > 1e-9:
         mix = mix / peak
-    mix = _soft_clip(mix, TIRE_SCREECH_SATURATION_DRIVE)
+    mix = _soft_clip(mix, preset.saturation_drive)
     return mix * 0.9
+
+
+def render_tire_screech_preview(
+    preset: TireScreechPreset, sample_rate: int, duration_s: float = 1.6, seed: int = 7,
+) -> "np.ndarray":
+    """Renders `duration_s` seconds of `preset`'s screech clip repeated
+    back-to-back -- the same "retrigger while still above threshold"
+    behavior TireScreech.update() does through a sustained corner -- for
+    offline audition/export. See sfx_test.py."""
+    rng = np.random.default_rng(seed)
+    wave = _tire_screech_wave(sample_rate, rng, preset)
+    total_samples = max(1, int(duration_s * sample_rate))
+    repeats = max(1, -(-total_samples // len(wave)))  # ceil division
+    tiled = np.tile(wave, repeats)
+    return tiled[:total_samples]
 
 
 class EngineSound:
@@ -482,12 +564,17 @@ class EngineSound:
 
 
 class TireScreech:
+    """All three presets (TIRE_SCREECH_PRESETS) are pre-rendered up front
+    so set_preset() can switch instantly -- see game.py's `T` key and
+    sfx_test.py's audition tool."""
+
     CHANNEL = 2
 
-    def __init__(self, seed: int = 7):
+    def __init__(self, preset: str = TIRE_SCREECH_DEFAULT_PRESET, seed: int = 7):
         self.available = False
         self.unavailable_reason: str | None = None
-        self._sound = None
+        self._sounds_by_preset: dict[str, pygame.mixer.Sound] = {}
+        self.preset_name = preset
 
         if np is None:
             self.unavailable_reason = "numpy not installed"
@@ -498,15 +585,27 @@ class TireScreech:
             return
         sample_rate, channels = fmt
         try:
-            rng = np.random.default_rng(seed)
-            wave = _tire_screech_wave(sample_rate, rng)
-            self._sound = _to_sound(wave, channels)
-            self._sound.set_volume(TIRE_SCREECH_VOLUME)
+            for name, p in TIRE_SCREECH_PRESETS.items():
+                rng = np.random.default_rng(seed)
+                wave = _tire_screech_wave(sample_rate, rng, p)
+                sound = _to_sound(wave, channels)
+                sound.set_volume(p.volume)
+                self._sounds_by_preset[name] = sound
             self.available = True
         except (pygame.error, ValueError) as exc:
-            self._sound = None
+            self._sounds_by_preset = {}
             self.available = False
             self.unavailable_reason = f"sound creation failed: {exc.__class__.__name__}: {exc}"
+
+    def set_preset(self, name: str) -> None:
+        """Switches synthesis recipe. Unlike the engine's set_preset(),
+        this doesn't force an immediate re-trigger -- a screech is a
+        short one-shot clip, not a sustained loop, so a clip already
+        mid-playback just finishes naturally and the *next* trigger (see
+        update()) picks up the new preset."""
+        if name not in self._sounds_by_preset or name == self.preset_name:
+            return
+        self.preset_name = name
 
     def update(self, lateral_proxy: float, active: bool) -> None:
         if not self.available:
@@ -515,9 +614,21 @@ class TireScreech:
         try:
             if active and abs(lateral_proxy) > TIRE_SCREECH_THRESHOLD:
                 if not channel.get_busy():
-                    channel.play(self._sound)
+                    channel.play(self._sounds_by_preset[self.preset_name])
             elif channel.get_busy():
                 channel.fadeout(TIRE_SCREECH_FADE_MS)
+        except pygame.error:
+            self.available = False
+
+    def play_now(self) -> None:
+        """Plays the current preset's clip immediately, bypassing the
+        threshold check -- used by sfx_test.py's audition tool for
+        on-demand comparison; the race itself only ever goes through
+        update()."""
+        if not self.available:
+            return
+        try:
+            pygame.mixer.Channel(self.CHANNEL).play(self._sounds_by_preset[self.preset_name])
         except pygame.error:
             self.available = False
 

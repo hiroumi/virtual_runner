@@ -418,6 +418,7 @@ playing at full (100%) volume.
 | `I` | Debug: invert disparity sign |
 | `D` | Toggle FPS / frame-time / depth debug overlay |
 | `E` | Cycle the engine sound preset (LOW RUMBLE / ARCADE ENGINE / CHIP ENGINE) |
+| `T` | Cycle the tire screech preset (CLASSIC SQUEAL / GRIP SLIDE / ARCADE CHIRP) |
 | `F` | Toggle fullscreen / windowed |
 | `S` | Save current `parallax_scale` to `config.json` |
 | `R` | Restart the race (same BGM/settings, current race from the top) |
@@ -489,13 +490,15 @@ recording), the answer was code synthesis over file-based SFX.
   centrifugal-drift proxy `Game.update()` already computes every frame --
   as a stand-in for lateral tire force (there's no real slip/grip model).
   Above `TIRE_SCREECH_THRESHOLD`, a short noise-based screech clip (high-
-  passed noise mixed with a couple of vibrato'd resonant tones) plays on
-  its own channel, retriggering back-to-back for as long as the threshold
-  holds -- so a multi-second bend gets continuous screech, not one clip
-  cut short -- and fades out (`TIRE_SCREECH_FADE_MS`) once cornering
-  force drops back down. `TIRE_SCREECH_THRESHOLD` was lowered
-  significantly on 2026-09-04 (see below) so essentially any real
-  cornering triggers it, not just the sharpest bends.
+  passed noise mixed with a couple of vibrato'd resonant tones, see
+  `TireScreechPreset`) plays on its own channel, retriggering back-to-back
+  for as long as the threshold holds -- so a multi-second bend gets
+  continuous screech, not one clip cut short -- and fades out
+  (`TIRE_SCREECH_FADE_MS`) once cornering force drops back down.
+  `TIRE_SCREECH_THRESHOLD` was lowered significantly on 2026-09-04 (see
+  below) so essentially any real cornering triggers it, not just the
+  sharpest bends. Three switchable presets (`TIRE_SCREECH_PRESETS`) offer
+  different noise/tone recipes -- see "Tire screech presets" below.
 
 Both `EngineSound` and `TireScreech` degrade to complete, silent no-ops
 if numpy or `pygame.mixer` aren't usable (matching `MusicPlayer`'s
@@ -657,6 +660,40 @@ simulation across candidate thresholds picked `0.05` (~39% of the lap
 playing vs. the old ~3.6%). `TIRE_SCREECH_VOLUME`/waveform are
 untouched -- see docs/PHASE2_RACE_LOG.md for the full threshold-vs-
 frequency table.
+
+**2026-09-04, eighth pass: "このくらいでいいですよ. 音も何パータンかつ
+くって、どれがいいかテストしたいです"** (this frequency is fine -- now
+make several sound patterns to compare). Mirrors the engine's A/B/C
+preset approach: tire screech got its own `TireScreechPreset` dataclass
+and three switchable recipes -- see "Tire screech presets" below.
+`TIRE_SCREECH_THRESHOLD`/`TIRE_SCREECH_FADE_MS` stay global (they govern
+*when* a screech triggers); volume/waveform/duration/drive moved into
+per-preset fields, so the old single `TIRE_SCREECH_VOLUME`/
+`TIRE_SCREECH_SATURATION_DRIVE`/`TIRE_SCREECH_SECONDS` constants are
+gone.
+
+### Tire screech presets (`T` key / `sfx_test.py`)
+
+Same rationale as the engine's presets -- character is a real-hardware
+listening call, so three recipes (`sfx.TIRE_SCREECH_PRESETS`) are built
+at startup and switchable live:
+
+| Preset | Character | Noise share | Tone center |
+|---|---|---|---|
+| `CLASSIC SQUEAL` | The original (pre-preset) recipe, kept as the baseline | 0.5 | 1900 Hz |
+| `GRIP SLIDE` | Noise-dominant, pitched much lower -- rubber grinding on asphalt rather than a high squeal | 0.75 | 900 Hz |
+| `ARCADE CHIRP` | Short, bright, tone-dominant -- a quick "eeee!" chirp | 0.3 | 2600 Hz |
+
+Press `T` during the race to cycle presets (`CLASSIC SQUEAL` is the
+default, unevaluated as of this writing) -- the name flashes on screen
+the same way `E`'s does. Unlike the engine's `set_preset`, this doesn't
+force an immediate re-trigger: a screech is a short one-shot clip, not a
+sustained loop, so a clip already mid-playback just finishes naturally
+and the *next* trigger picks up the new preset. `sfx_test.py`'s
+interactive screen (`python main.py --sfx-test`) adds `X`/`Y`/`Z` to
+pick a tire preset and `Space` to play it on demand; `--export-wav` now
+also writes `debug_tire_<preset>.wav` (3 files) alongside the 12 engine
+WAVs.
 
 ### How the road gets its stereo effect
 
@@ -860,11 +897,12 @@ music.py                 pre-race "SELECT MUSIC" screen + MusicPlayer
                         preview/loop playback, safe load-error handling)
 bgm/                     the three BGM tracks music.py loads (mp3,
                         committed -- original, user-supplied audio)
-sfx.py                   synthesized engine drone (RPM-driven, three
-                        switchable presets) + tire screech sound effects
+sfx.py                   synthesized engine drone (RPM-driven) + tire
+                        screech, each with three switchable presets
                         (numpy + pygame.sndarray; no audio files)
-sfx_test.py              engine SFX audition tool (`--sfx-test`): live
-                        A/B/C preset + speed-level comparison, and
+sfx_test.py              SFX audition tool (`--sfx-test`): live engine
+                        A/B/C preset + speed-level comparison, tire
+                        screech X/Y/Z preset + on-demand playback, and
                         `--export-wav` for offline WAV previews (never
                         committed, see .gitignore's debug_wav/ entry)
 input_reset.py            shared Reset input plumbing (Select/Back

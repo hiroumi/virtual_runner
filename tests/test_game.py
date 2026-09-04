@@ -14,7 +14,7 @@ import game
 from config import default_config
 from music import BGM_DIR, MusicPlayer, MusicSelectScreen
 from road import HILL_START, SEGMENT_LENGTH, elevation_at
-from sfx import ENGINE_PRESET_ORDER
+from sfx import ENGINE_PRESET_ORDER, TIRE_SCREECH_PRESET_ORDER
 
 BGM_ASSETS_PRESENT = BGM_DIR.is_dir() and any(BGM_DIR.glob("*.mp3"))
 
@@ -354,7 +354,7 @@ def test_every_key_binding_executes_without_crashing(monkeypatch):
     g = _make_game()
     keys = [
         pygame.K_LEFTBRACKET, pygame.K_RIGHTBRACKET, pygame.K_z, pygame.K_i,
-        pygame.K_d, pygame.K_f, pygame.K_s, pygame.K_r, pygame.K_e,
+        pygame.K_d, pygame.K_f, pygame.K_s, pygame.K_r, pygame.K_e, pygame.K_t,
     ]
     for key in keys:
         event = pygame.event.Event(pygame.KEYDOWN, key=key, mod=0)
@@ -390,7 +390,7 @@ def test_e_key_wraps_around_after_cycling_through_every_preset():
 def test_e_key_sets_a_flash_message_that_expires():
     g = _make_game()
     g._cycle_engine_preset()
-    assert g._preset_flash_name == g.engine_sound.preset_name
+    assert g._preset_flash_name == f"ENGINE: {g.engine_sound.preset_name}"
     assert pygame.time.get_ticks() < g._preset_flash_until_ms
     g._draw()  # must not crash while the flash is showing
     pygame.quit()
@@ -402,6 +402,54 @@ def test_preset_flash_is_included_via_handle_keydown():
     event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_e, mod=0)
     assert g._handle_keydown(event) is True
     assert g.engine_sound.preset_name != start
+    pygame.quit()
+
+
+# -- tire screech preset cycling (`T` key, 2026-09-04) --------------------
+
+
+def test_t_key_cycles_to_the_next_tire_screech_preset():
+    g = _make_game()
+    start = g.tire_screech.preset_name
+    g._cycle_tire_preset()
+    assert g.tire_screech.preset_name != start
+    assert g.tire_screech.preset_name in TIRE_SCREECH_PRESET_ORDER
+    pygame.quit()
+
+
+def test_t_key_wraps_around_after_cycling_through_every_preset():
+    g = _make_game()
+    original = g.tire_screech.preset_name
+    for _ in range(len(TIRE_SCREECH_PRESET_ORDER)):
+        g._cycle_tire_preset()
+    assert g.tire_screech.preset_name == original
+    pygame.quit()
+
+
+def test_t_key_sets_a_flash_message_that_expires():
+    g = _make_game()
+    g._cycle_tire_preset()
+    assert g._preset_flash_name == f"TIRE: {g.tire_screech.preset_name}"
+    assert pygame.time.get_ticks() < g._preset_flash_until_ms
+    g._draw()  # must not crash while the flash is showing
+    pygame.quit()
+
+
+def test_t_key_via_handle_keydown_switches_the_tire_preset():
+    g = _make_game()
+    start = g.tire_screech.preset_name
+    event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_t, mod=0)
+    assert g._handle_keydown(event) is True
+    assert g.tire_screech.preset_name != start
+    pygame.quit()
+
+
+def test_engine_and_tire_preset_flashes_do_not_interfere_with_each_other():
+    g = _make_game()
+    g._cycle_engine_preset()
+    assert g._preset_flash_name.startswith("ENGINE:")
+    g._cycle_tire_preset()
+    assert g._preset_flash_name.startswith("TIRE:")  # latest flash wins
     pygame.quit()
 
 

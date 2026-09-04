@@ -1,7 +1,8 @@
-"""Tests for the engine SFX audition tool (sfx_test.py): WAV export and
-the interactive comparison screen. Actual audio quality can't be judged
-here (headless SDL dummy driver) -- these only verify generation,
-playback wiring, preset/speed switching, and that nothing crashes."""
+"""Tests for the SFX audition tool (sfx_test.py): WAV export and the
+interactive comparison screen, for both the engine and tire screech
+presets. Actual audio quality can't be judged here (headless SDL dummy
+driver) -- these only verify generation, playback wiring, preset/speed
+switching, and that nothing crashes."""
 import os
 import sys
 import wave as wave_module
@@ -16,12 +17,13 @@ import pygame
 import pytest
 
 import sfx_test
-from sfx import ENGINE_PRESET_ORDER, SPEED_LEVELS
+from sfx import ENGINE_PRESET_ORDER, SPEED_LEVELS, TIRE_SCREECH_PRESET_ORDER
 
 
-def test_export_debug_wavs_writes_one_file_per_preset_and_speed_level(tmp_path):
+def test_export_debug_wavs_writes_one_file_per_engine_preset_and_speed_level_plus_tire_presets(tmp_path):
     written = sfx_test.export_debug_wavs(tmp_path, sample_rate=22050)
-    assert len(written) == len(ENGINE_PRESET_ORDER) * len(SPEED_LEVELS)
+    expected = len(ENGINE_PRESET_ORDER) * len(SPEED_LEVELS) + len(TIRE_SCREECH_PRESET_ORDER)
+    assert len(written) == expected
     for path in written:
         assert path.exists()
         assert path.parent == tmp_path
@@ -33,6 +35,9 @@ def test_export_debug_wavs_filenames_match_preset_and_speed(tmp_path):
     assert "debug_engine_arcade_engine_idle.wav" in names
     assert "debug_engine_low_rumble_high.wav" in names
     assert "debug_engine_chip_engine_medium.wav" in names
+    assert "debug_tire_classic_squeal.wav" in names
+    assert "debug_tire_grip_slide.wav" in names
+    assert "debug_tire_arcade_chirp.wav" in names
 
 
 def test_exported_wav_is_valid_and_has_expected_duration(tmp_path):
@@ -71,6 +76,30 @@ def test_sfx_test_screen_switches_preset_and_speed(monkeypatch):
     screen.run(test_frames=2)
     assert screen.engine.preset_name == "ARCADE ENGINE"
     assert screen.speed_name == "medium"
+    pygame.quit()
+
+
+def test_sfx_test_screen_switches_tire_screech_preset(monkeypatch):
+    pygame.init()
+    screen = sfx_test.SfxTestScreen()
+    monkeypatch.setattr(
+        pygame.event, "get",
+        lambda: [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_y, mod=0)],
+    )
+    screen.run(test_frames=1)
+    assert screen.tire.preset_name == "GRIP SLIDE"
+    pygame.quit()
+
+
+def test_sfx_test_screen_space_plays_the_tire_screech_now(monkeypatch):
+    pygame.init()
+    screen = sfx_test.SfxTestScreen()
+    monkeypatch.setattr(
+        pygame.event, "get",
+        lambda: [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE, mod=0)],
+    )
+    screen.run(test_frames=1)
+    assert pygame.mixer.Channel(sfx_test.sfx.TireScreech.CHANNEL).get_busy() is True
     pygame.quit()
 
 

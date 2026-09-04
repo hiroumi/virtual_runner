@@ -35,7 +35,13 @@ from road import (
     world_x_at,
 )
 from music import MusicPlayer, MusicSelectScreen
-from sfx import ENGINE_BUCKET_COUNT, ENGINE_PRESET_ORDER, EngineSound, TireScreech
+from sfx import (
+    ENGINE_BUCKET_COUNT,
+    ENGINE_PRESET_ORDER,
+    TIRE_SCREECH_PRESET_ORDER,
+    EngineSound,
+    TireScreech,
+)
 from stereo_renderer import StereoRenderer
 
 BLACK = (0, 0, 0)
@@ -70,7 +76,7 @@ PLAYER_CAR_DEPTH = 3.0  # matches the Phase 2 test scene's tuned value
 # docstring below for the full flow.
 RESET_FLASH_MS = 150  # how long the "RESET" flat-text flash is held on screen
 
-PRESET_FLASH_MS = 1200  # how long the engine-preset name flash stays on screen
+PRESET_FLASH_MS = 1200  # how long an engine/tire-screech preset name flash stays on screen
 
 # The speedometer always reads HUD_MAX_DISPLAY_SPEED at MAX_SPEED,
 # regardless of what MAX_SPEED actually is -- this lets the underlying
@@ -260,8 +266,8 @@ class Game:
         # no-ops on their own if numpy/pygame.mixer aren't usable.
         self.engine_sound = EngineSound()
         self.tire_screech = TireScreech()
-        # Brief on-screen name flash when the `E` key cycles the engine
-        # preset (see _cycle_engine_preset) -- not gated behind
+        # Brief on-screen name flash when `E`/`T` cycles the engine/tire
+        # screech preset (see _cycle_preset) -- not gated behind
         # self.show_debug, since auditioning presets is meant to be usable
         # even without the full debug overlay on.
         self._preset_flash_name: str | None = None
@@ -364,7 +370,18 @@ class Game:
             save_config(cfg)
         elif key == pygame.K_e:
             self._cycle_engine_preset()
+        elif key == pygame.K_t:
+            self._cycle_tire_preset()
         return True
+
+    def _cycle_preset(self, order: list[str], current: str, set_preset, label: str) -> None:
+        """Shared by _cycle_engine_preset/_cycle_tire_preset: advances to
+        the next name in `order`, applies it via `set_preset`, and flashes
+        "<label>: <name>" on screen -- see _draw_preset_flash."""
+        next_name = order[(order.index(current) + 1) % len(order)] if current in order else order[0]
+        set_preset(next_name)
+        self._preset_flash_name = f"{label}: {next_name}"
+        self._preset_flash_until_ms = pygame.time.get_ticks() + PRESET_FLASH_MS
 
     def _cycle_engine_preset(self) -> None:
         """`E`: audition the engine's three synthesis presets (see
@@ -373,12 +390,16 @@ class Game:
         make on its own -- see also sfx_test.py for an offline comparison
         tool. Purely a debug/tuning aid; has no effect on config.json or
         anything else the race depends on."""
-        order = ENGINE_PRESET_ORDER
-        current = self.engine_sound.preset_name
-        next_name = order[(order.index(current) + 1) % len(order)] if current in order else order[0]
-        self.engine_sound.set_preset(next_name)
-        self._preset_flash_name = next_name
-        self._preset_flash_until_ms = pygame.time.get_ticks() + PRESET_FLASH_MS
+        self._cycle_preset(
+            ENGINE_PRESET_ORDER, self.engine_sound.preset_name, self.engine_sound.set_preset, "ENGINE"
+        )
+
+    def _cycle_tire_preset(self) -> None:
+        """`T`: same idea as `E`, for the tire screech's three synthesis
+        presets (see sfx.TIRE_SCREECH_PRESETS)."""
+        self._cycle_preset(
+            TIRE_SCREECH_PRESET_ORDER, self.tire_screech.preset_name, self.tire_screech.set_preset, "TIRE"
+        )
 
     def _restart(self) -> None:
         self.player = Player()
@@ -750,7 +771,7 @@ class Game:
 
     def _draw_preset_flash(self, surf: pygame.Surface, ox: float) -> None:
         w, _h = surf.get_size()
-        text = self.font_hud.render(f"ENGINE: {self._preset_flash_name}", True, MESSAGE_COLOR)
+        text = self.font_hud.render(self._preset_flash_name, True, MESSAGE_COLOR)
         surf.blit(text, text.get_rect(midtop=(w / 2 + ox, 4)))
 
     def _draw_message(self) -> None:
@@ -776,6 +797,7 @@ class Game:
             f" preset={self.engine_sound.preset_name}(E) rpm={self.engine_sound.engine_rpm:.2f}"
             f" bucket={self.engine_sound._bucket}/{ENGINE_BUCKET_COUNT - 1}"
             f"  tire_screech: {'on' if self.tire_screech.available else 'unavailable'}"
+            f" preset={self.tire_screech.preset_name}(T)"
             f" playing={pygame.mixer.Channel(self.tire_screech.CHANNEL).get_busy() if self.tire_screech.available else False}",
         ]
         # Only shown when something's actually wrong -- see sfx.py's
