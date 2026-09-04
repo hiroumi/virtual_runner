@@ -277,6 +277,28 @@ def test_engine_pitch_tracks_speed_over_a_full_race():
     pygame.quit()
 
 
+def test_tire_screech_triggers_frequently_over_a_full_race():
+    # Regression test for the 2026-09-04 threshold change: the old
+    # TIRE_SCREECH_THRESHOLD=0.15 only crossed twice in a full lap
+    # (~2.7s of screech out of ~74s total) -- reported as "実感できない"
+    # (can't feel it). The lowered threshold should make screech play a
+    # substantial fraction of the lap, not just a couple of rare blips.
+    g = _make_game()
+    keys = _keys(UP=True)
+    screeching_frames = 0
+    total_frames = 0
+    for _ in range(6000):
+        g.update(1 / 60, keys)
+        total_frames += 1
+        if pygame.mixer.Channel(g.tire_screech.CHANNEL).get_busy():
+            screeching_frames += 1
+        if g.finished or g.time_up:
+            break
+    assert g.finished or g.time_up  # sanity: the race actually completed
+    assert screeching_frames / total_frames > 0.2  # well above the old ~3.6%
+    pygame.quit()
+
+
 def test_sfx_stop_when_the_race_finishes():
     g = _make_game()
     g.player.z = g.track_length - 0.01

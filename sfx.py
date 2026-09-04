@@ -161,7 +161,21 @@ SPEED_LEVELS: dict[str, float] = {
 # threshold: a short noise-screech clip plays, retriggering back-to-back
 # for as long as the threshold holds (so a multi-second bend gets
 # continuous screech, not one clip cut short); below it, fades out quickly.
-TIRE_SCREECH_THRESHOLD = 0.15
+#
+# 2026-09-04 (ninth pass, after the engine sound was confirmed good): user
+# feedback was "実感できない" (can't feel it). A full-lap headless
+# simulation (flat-out throttle, no steering) at the old
+# TIRE_SCREECH_THRESHOLD=0.15 found the trigger condition itself worked --
+# but the course only crosses it twice in a ~74s lap, ~1.3s each, ~2.7s of
+# screech total. The effective RMS at TIRE_SCREECH_VOLUME=0.8 (~0.32) is
+# already *louder* than the engine's now-confirmed-good level (~0.24-0.25
+# at ARCADE ENGINE's volume=0.4) -- so this was a rarity problem, not a
+# loudness one. Asked to trigger "on basically every steer"; the same
+# simulation across candidate thresholds found 0.05 gets ~39% of the lap
+# playing (36 episodes, ~0.8s average) -- frequent, responsive feedback on
+# essentially any real cornering, without being permanently on through the
+# straights. See docs/PHASE2_RACE_LOG.md for the full numbers.
+TIRE_SCREECH_THRESHOLD = 0.05
 TIRE_SCREECH_SECONDS = 0.35
 TIRE_SCREECH_FADE_MS = 120
 # 2026-09-04 (second pass, see the engine's history above): raised to

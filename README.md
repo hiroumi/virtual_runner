@@ -493,8 +493,9 @@ recording), the answer was code synthesis over file-based SFX.
   its own channel, retriggering back-to-back for as long as the threshold
   holds -- so a multi-second bend gets continuous screech, not one clip
   cut short -- and fades out (`TIRE_SCREECH_FADE_MS`) once cornering
-  force drops back down. Gentle bends stay under threshold on purpose;
-  only the sharper ones (medium sweeps and up) trigger it.
+  force drops back down. `TIRE_SCREECH_THRESHOLD` was lowered
+  significantly on 2026-09-04 (see below) so essentially any real
+  cornering triggers it, not just the sharpest bends.
 
 Both `EngineSound` and `TireScreech` degrade to complete, silent no-ops
 if numpy or `pygame.mixer` aren't usable (matching `MusicPlayer`'s
@@ -641,6 +642,21 @@ the BGM," so only `ARCADE ENGINE`'s `volume` moved, `0.8 -> 0.6`
 (simulated effective RMS ~0.47-0.49 -> ~0.35-0.37) -- its waveform/drive
 are untouched, since the tone itself was the part that was praised.
 `LOW RUMBLE`/`CHIP ENGINE` are unevaluated and unchanged.
+
+**2026-09-04, seventh pass: "still fine to be even smaller" (engine) then
+"実感できない" (tire screech, can't feel it).** `ARCADE ENGINE`'s
+`volume` moved once more, `0.6 -> 0.4` (effective RMS ~0.35-0.37 ->
+~0.24-0.25), confirmed as the right level ("うん、これでいいですね").
+Attention then turned to the tire screech: a full-lap headless
+simulation (flat-out throttle, no steering) at the old
+`TIRE_SCREECH_THRESHOLD=0.15` found it triggering only twice in a ~74s
+lap, ~2.7s of screech total -- its RMS (~0.32) was already *louder* than
+the now-confirmed engine level, so this was a rarity problem, not a
+loudness one. Asked to trigger "on basically every steer," the same
+simulation across candidate thresholds picked `0.05` (~39% of the lap
+playing vs. the old ~3.6%). `TIRE_SCREECH_VOLUME`/waveform are
+untouched -- see docs/PHASE2_RACE_LOG.md for the full threshold-vs-
+frequency table.
 
 ### How the road gets its stereo effect
 
