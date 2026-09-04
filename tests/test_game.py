@@ -31,6 +31,23 @@ def _keys(**pressed):
     return k
 
 
+class FakeController:
+    """Minimal stand-in for pygame._sdl2.controller.Controller, for
+    exercising Game's 2026-09-04 gamepad wiring without real hardware --
+    see gamepad.read_steer/read_accel/read_brake, which only ever call
+    get_axis()/get_button() on whatever's passed in."""
+
+    def __init__(self, axes=None, buttons=None):
+        self._axes = axes or {}
+        self._buttons = set(buttons or ())
+
+    def get_axis(self, axis):
+        return self._axes.get(axis, 0)
+
+    def get_button(self, button):
+        return button in self._buttons
+
+
 def _make_game():
     pygame.init()
     pygame.display.set_mode((1024, 600))
@@ -611,4 +628,115 @@ def test_game_run_resets_when_the_gamepad_hold_triggers(monkeypatch):
     g = _make_game()
     outcome = g.run(test_frames=3)
     assert outcome == "reset"
+    pygame.quit()
+
+
+# -- Xbox controller racing input (2026-09-04) -----------------------------
+# Real hardware (does Windows' Xbox controller actually get recognized as
+# an SDL game controller, do the diagnostics print sensible values, does
+# steering/accel/brake feel right) can't be verified in this environment --
+# see docs/PHASE2_RACE_LOG.md. These exercise the wiring with a fake
+# Controller double instead.
+
+
+def test_gamepad_a_button_accelerates_like_up_arrow():
+    g = _make_game()
+    gamepad = FakeController(buttons={pygame.CONTROLLER_BUTTON_A})
+    for _ in range(120):
+        g.update(1 / 60, _keys(), gamepad)
+    assert g.player.speed > 0.0
+    pygame.quit()
+
+
+def test_gamepad_b_button_brakes_like_down_arrow():
+    g = _make_game()
+    g.player.speed = game.MAX_SPEED
+    gamepad = FakeController(buttons={pygame.CONTROLLER_BUTTON_B})
+    g.update(1 / 60, _keys(), gamepad)
+    assert g.player.speed < game.MAX_SPEED
+    pygame.quit()
+
+
+def test_gamepad_dpad_steers_the_car():
+    g = _make_game()
+    g.player.speed = game.MAX_SPEED
+    right = FakeController(buttons={pygame.CONTROLLER_BUTTON_DPAD_RIGHT})
+    g.update(1 / 60, _keys(), right)
+    assert g.player.x > 0.0
+    pygame.quit()
+
+
+def test_gamepad_analog_stick_steers_the_car():
+    g = _make_game()
+    g.player.speed = game.MAX_SPEED
+    left_stick = FakeController(axes={pygame.CONTROLLER_AXIS_LEFTX: -32768})
+    g.update(1 / 60, _keys(), left_stick)
+    assert g.player.x < 0.0
+    pygame.quit()
+
+
+def test_gamepad_steer_within_deadzone_does_not_move_the_car():
+    # Center-position drift on a real stick must never steer -- see
+    # gamepad.STEER_DEADZONE.
+    g = _make_game()
+    g.player.speed = game.MAX_SPEED
+    drifting = FakeController(axes={pygame.CONTROLLER_AXIS_LEFTX: 2000})  # well under the deadzone
+    x_before = g.player.x
+    g.update(1 / 60, _keys(), drifting)
+    assert g.player.x == x_before
+    pygame.quit()
+
+
+def test_gamepad_and_keyboard_steering_can_be_used_together():
+    # Neither input method is exclusive -- both keep working simultaneously.
+    g = _make_game()
+    g.player.speed = game.MAX_SPEED
+    right = FakeController(buttons={pygame.CONTROLLER_BUTTON_DPAD_RIGHT})
+    g.update(1 / 60, _keys(RIGHT=True), right)
+    assert g.player.x > 0.0  # still steers, not confused by two input sources agreeing
+    pygame.quit()
+
+
+def test_game_update_works_with_no_gamepad_argument_at_all():
+    # Default value (gamepad=None) -- existing keyboard-only callers
+    # (every other test in this file) must keep working unmodified.
+    g = _make_game()
+    g.update(1 / 60, _keys(UP=True))
+    assert g.player.speed > 0.0
+    pygame.quit()
+
+
+def test_start_button_restarts_the_race():
+    g = _make_game()
+    g.score = 500.0
+    g.finished = True
+    event = pygame.event.Event(pygame.CONTROLLERBUTTONDOWN, button=pygame.CONTROLLER_BUTTON_START, instance_id=0)
+    g._handle_controller_button_down(event)
+    assert g.score == 0.0
+    assert g.finished is False
+    pygame.quit()
+
+
+def test_start_button_does_not_trigger_a_reset():
+    g = _make_game()
+    event = pygame.event.Event(pygame.CONTROLLERBUTTONDOWN, button=pygame.CONTROLLER_BUTTON_START, instance_id=0)
+    g._handle_controller_button_down(event)
+    assert g._outcome == "quit"  # Restart, not Reset
+    pygame.quit()
+
+
+def test_back_button_down_event_still_feeds_the_reset_hold():
+    g = _make_game()
+    event = pygame.event.Event(pygame.CONTROLLERBUTTONDOWN, button=pygame.CONTROLLER_BUTTON_BACK, instance_id=0)
+    g._handle_controller_button_down(event)
+    assert g.gamepad_reset_hold._started_ms is not None
+    pygame.quit()
+
+
+def test_a_button_press_does_not_restart_the_race():
+    g = _make_game()
+    g.score = 500.0
+    event = pygame.event.Event(pygame.CONTROLLERBUTTONDOWN, button=pygame.CONTROLLER_BUTTON_A, instance_id=0)
+    g._handle_controller_button_down(event)
+    assert g.score == 500.0
     pygame.quit()

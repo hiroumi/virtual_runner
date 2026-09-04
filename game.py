@@ -23,7 +23,15 @@ import random
 import pygame
 
 from config import load_config, save_config
-from input_reset import GamepadResetHold, open_connected_controllers, open_controller_from_event
+from gamepad import (
+    GamepadResetHold,
+    get_primary_controller,
+    open_connected_controllers,
+    open_controller_from_event,
+    read_accel,
+    read_brake,
+    read_steer,
+)
 from road import (
     DRAW_DISTANCE,
     ROAD_WIDTH,
@@ -70,7 +78,7 @@ RACE_TIME = 90.0
 PLAYER_CAR_DEPTH = 3.0  # matches the Phase 2 test scene's tuned value
 
 # Maker Faire "next visitor" reset: Backspace (keyboard) or an ~1s held
-# Select/Back (gamepad, see input_reset.GamepadResetHold) tears the
+# Select/Back (gamepad, see gamepad.GamepadResetHold) tears the
 # current session down and returns to SELECT MUSIC without quitting
 # pygame or touching config.json -- see Game._trigger_reset / run()'s
 # docstring below for the full flow.
@@ -322,7 +330,9 @@ class Game:
                 elif event.type == pygame.KEYDOWN:
                     if not self._handle_keydown(event):
                         running = False
-                elif event.type in (pygame.CONTROLLERBUTTONDOWN, pygame.CONTROLLERBUTTONUP):
+                elif event.type == pygame.CONTROLLERBUTTONDOWN:
+                    self._handle_controller_button_down(event)
+                elif event.type == pygame.CONTROLLERBUTTONUP:
                     self.gamepad_reset_hold.handle_event(event)
                 elif event.type == pygame.CONTROLLERDEVICEADDED:
                     open_controller_from_event(event)
@@ -330,7 +340,8 @@ class Game:
                 self._trigger_reset()
                 running = False
             keys = pygame.key.get_pressed()
-            self.update(dt, keys)
+            gamepad = get_primary_controller()
+            self.update(dt, keys, gamepad)
             self._draw()
             pygame.display.flip()
             frame += 1
@@ -339,6 +350,16 @@ class Game:
         if self._outcome == "reset":
             self._draw_reset_flash()
         return self._outcome
+
+    def _handle_controller_button_down(self, event: pygame.event.Event) -> None:
+        """START maps to Restart -- "既存のポーズ/スタート操作": there's no
+        pause feature in this game, so the closest existing "start
+        (again)" action is Restart, same as the `R` key. Select/Back's
+        hold-to-reset is handled by gamepad_reset_hold regardless of
+        which button this event is for (it ignores anything else)."""
+        self.gamepad_reset_hold.handle_event(event)
+        if event.button == pygame.CONTROLLER_BUTTON_START:
+            self._restart()
 
     def _handle_keydown(self, event: pygame.event.Event) -> bool:
         renderer, cfg = self.renderer, self.cfg
@@ -445,7 +466,12 @@ class Game:
         pygame.time.delay(RESET_FLASH_MS)
 
     # -- simulation (runs once, regardless of how many eyes we draw) ----
-    def update(self, dt: float, keys) -> None:
+    def update(self, dt: float, keys, gamepad=None) -> None:
+        """`gamepad` is the pygame._sdl2.controller.Controller to read
+        analog steering/accelerate/brake from this frame, or None (no
+        controller connected/recognized) -- keyboard keeps working
+        exactly as before either way; see gamepad.py's read_steer/
+        read_accel/read_brake, which all degrade to "no input" on None."""
         start = pygame.time.get_ticks()
         self.collision_cooldown = max(0.0, self.collision_cooldown - dt)
 
@@ -455,9 +481,9 @@ class Game:
             max_speed = OFFROAD_MAX_SPEED if offroad else MAX_SPEED
             friction = OFFROAD_FRICTION if offroad else FRICTION
 
-            if keys[pygame.K_UP] or keys[pygame.K_w]:
+            if keys[pygame.K_UP] or keys[pygame.K_w] or read_accel(gamepad):
                 self.player.speed += ACCEL * dt
-            elif keys[pygame.K_DOWN] or keys[pygame.K_s]:
+            elif keys[pygame.K_DOWN] or keys[pygame.K_s] or read_brake(gamepad):
                 self.player.speed -= BRAKE * dt
             else:
                 self.player.speed -= friction * dt
@@ -469,6 +495,7 @@ class Game:
                 steer -= 1.0
             if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
                 steer += 1.0
+            steer = max(-1.0, min(1.0, steer + read_steer(gamepad)))
             self.player.x += steer * STEER_RATE * speed_frac * dt
 
             # Interpolated, not the coarse per-segment value: during a

@@ -222,7 +222,7 @@ def test_reset_to_pixel_breeze_helper_resets_selection_and_preview():
 
 
 def test_gamepad_hold_reset_is_wired_into_the_select_screens_event_loop(monkeypatch):
-    from input_reset import GamepadResetHold
+    from gamepad import GamepadResetHold
 
     screen, music = _make_screen()
     music.select(1)
@@ -267,4 +267,93 @@ def test_escape_quits_without_selecting(monkeypatch):
     monkeypatch.setattr(pygame.event, "get", _scripted_keydowns([pygame.K_ESCAPE]))
     result = screen.run(test_frames=None)
     assert result is None
+    pygame.quit()
+
+
+# -- Xbox controller SELECT MUSIC navigation (2026-09-04) -------------------
+# Real hardware (is the pad actually recognized by Windows as an SDL game
+# controller, does the D-pad/stick/A/Start feel right) can't be verified
+# in this environment -- see docs/PHASE2_RACE_LOG.md.
+
+
+def _scripted_events(events):
+    it = iter(events)
+
+    def fake_get():
+        try:
+            return [next(it)]
+        except StopIteration:
+            return []
+
+    return fake_get
+
+
+def _controller_button_down(button):
+    return pygame.event.Event(pygame.CONTROLLERBUTTONDOWN, button=button, instance_id=0)
+
+
+def test_dpad_right_right_then_a_selects_the_third_track(monkeypatch):
+    screen, music = _make_screen()
+    monkeypatch.setattr(
+        pygame.event, "get",
+        _scripted_events([
+            _controller_button_down(pygame.CONTROLLER_BUTTON_DPAD_RIGHT),
+            _controller_button_down(pygame.CONTROLLER_BUTTON_DPAD_RIGHT),
+            _controller_button_down(pygame.CONTROLLER_BUTTON_A),
+        ]),
+    )
+    result = screen.run(test_frames=None)
+    assert result == 2
+    assert music.current_name == "BEYOND THE RED HORIZON"
+    pygame.quit()
+
+
+def test_dpad_left_wraps_then_start_confirms(monkeypatch):
+    screen, music = _make_screen()
+    monkeypatch.setattr(
+        pygame.event, "get",
+        _scripted_events([
+            _controller_button_down(pygame.CONTROLLER_BUTTON_DPAD_LEFT),
+            _controller_button_down(pygame.CONTROLLER_BUTTON_START),
+        ]),
+    )
+    result = screen.run(test_frames=None)
+    assert result == 2  # wrapped from PIXEL BREEZE to the last track
+    assert music.current_name == "BEYOND THE RED HORIZON"
+    pygame.quit()
+
+
+def test_left_stick_switches_tracks_via_menu_stick_nav(monkeypatch):
+    from gamepad import MenuStickNav
+
+    screen, music = _make_screen()
+    calls = {"n": 0}
+
+    def fake_poll(self, controller):
+        calls["n"] += 1
+        return 1 if calls["n"] == 1 else 0  # one "next" push, then nothing
+
+    monkeypatch.setattr(MenuStickNav, "poll", fake_poll)
+    events = iter([
+        [],  # frame 1: no keys, but the (faked) stick nav pushes "next"
+        [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0)],  # frame 2: confirm
+    ])
+    monkeypatch.setattr(pygame.event, "get", lambda: next(events, []))
+    result = screen.run(test_frames=None)
+    assert result == 1
+    assert music.current_name == "CRIMSON HIGHWAY"
+    pygame.quit()
+
+
+def test_b_button_does_not_confirm_the_selection(monkeypatch):
+    screen, music = _make_screen()
+    monkeypatch.setattr(
+        pygame.event, "get",
+        _scripted_events([
+            _controller_button_down(pygame.CONTROLLER_BUTTON_B),
+            pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0),
+        ]),
+    )
+    result = screen.run(test_frames=None)
+    assert result is None  # B did nothing; only Esc ended the loop
     pygame.quit()

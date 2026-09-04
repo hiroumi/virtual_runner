@@ -15,7 +15,12 @@ from pathlib import Path
 
 import pygame
 
-from input_reset import GamepadResetHold, open_controller_from_event
+from gamepad import (
+    GamepadResetHold,
+    MenuStickNav,
+    get_primary_controller,
+    open_controller_from_event,
+)
 
 BGM_DIR = Path(__file__).resolve().parent / "bgm"
 
@@ -153,6 +158,7 @@ class MusicSelectScreen:
         self.font_error = _font(11)
         self.clock = pygame.time.Clock()
         self.gamepad_reset_hold = GamepadResetHold()
+        self.gamepad_stick_nav = MenuStickNav()
 
     def _reset_to_pixel_breeze(self) -> None:
         """Backspace (immediate) or a held gamepad Select/Back (see
@@ -195,12 +201,29 @@ class MusicSelectScreen:
                         return self.music.index
                     elif event.key == pygame.K_BACKSPACE:
                         self._reset_to_pixel_breeze()
-                elif event.type in (pygame.CONTROLLERBUTTONDOWN, pygame.CONTROLLERBUTTONUP):
+                elif event.type == pygame.CONTROLLERBUTTONDOWN:
+                    self.gamepad_reset_hold.handle_event(event)
+                    if event.button == pygame.CONTROLLER_BUTTON_DPAD_LEFT:
+                        self.music.prev()
+                        self.music.switch_to_selected_preview()
+                    elif event.button == pygame.CONTROLLER_BUTTON_DPAD_RIGHT:
+                        self.music.next()
+                        self.music.switch_to_selected_preview()
+                    elif event.button in (pygame.CONTROLLER_BUTTON_A, pygame.CONTROLLER_BUTTON_START):
+                        return self.music.index
+                elif event.type == pygame.CONTROLLERBUTTONUP:
                     self.gamepad_reset_hold.handle_event(event)
                 elif event.type == pygame.CONTROLLERDEVICEADDED:
                     open_controller_from_event(event)
             if self.gamepad_reset_hold.triggered():
                 self._reset_to_pixel_breeze()
+            stick_direction = self.gamepad_stick_nav.poll(get_primary_controller())
+            if stick_direction < 0:
+                self.music.prev()
+                self.music.switch_to_selected_preview()
+            elif stick_direction > 0:
+                self.music.next()
+                self.music.switch_to_selected_preview()
             self._draw_frame()
 
     def _draw_frame(self) -> None:

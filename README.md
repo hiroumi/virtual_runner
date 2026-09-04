@@ -430,6 +430,73 @@ extra friction. Touching a traffic car cuts your speed and starts a
 1-second collision cooldown so a single graze can't repeatedly stack
 penalties every frame.
 
+### Xbox/gamepad controller support (2026-09-04)
+
+Before this, the only gamepad code in the project was Reset's Select/
+Back hold (below) -- Windows recognized a connected Xbox controller fine
+(`joy.cpl` showed buttons/axes moving) but nothing in the game ever read
+a stick or button for driving or menu navigation, so it had no effect.
+Fixed with real-time input reading in `gamepad.py`, using pygame's
+SDL_GameController layer (`pygame._sdl2.controller`, plus the
+`CONTROLLER_*` event/constant namespace `GamepadResetHold` already used)
+instead of raw joystick axis/button indices, so "A", "Start", "D-pad
+left" etc. mean the same physical control across different pads --
+Windows' native Xbox controller support needs no extra key-mapping
+software for this to work.
+
+| Control | SELECT MUSIC | Racing |
+|---|---|---|
+| Left stick left/right | Switch track (debounced, see below) | Analog steering |
+| D-pad left/right | Switch track | Digital steering |
+| `A` | Confirm and start | Accelerate |
+| `B` | -- | Brake |
+| `Start` | Confirm and start | Restart (no pause feature exists to map this to; closest existing "start (again)" action, same as `R`) |
+| `Back`/`View` held ~1s | Reset | Reset |
+
+The left stick has a deadzone (`gamepad.STEER_DEADZONE`, default `0.18`,
+in the `0.15`-`0.20` range asked for) so resting near center on a worn
+or cheap pad never reads as steering. Menu track-switching uses a
+*different*, coarser deadzone (`MENU_STICK_DEADZONE`, `0.5`) plus a
+repeat interval (`MENU_STICK_REPEAT_MS`, `250`ms) -- `MenuStickNav`
+fires immediately on a fresh push in a new direction, then re-fires only
+every 250ms while held, so holding the stick over doesn't spam-switch
+tracks the way naively checking "past the deadzone" every frame would.
+The D-pad needs none of this in the menu -- `CONTROLLERBUTTONDOWN`
+already only fires once per physical press, unlike a held analog value.
+
+Startup logs one line per detected joystick (`open_connected_controllers`
+in `gamepad.py`, called once from `game.run()`):
+
+```
+[gamepad] 2 controller(s) detected
+[gamepad] #0: name='Xbox Controller' guid=... axes=6 buttons=11 hats=1 sdl_game_controller=True
+```
+
+`sdl_game_controller=False` means SDL doesn't recognize that device
+through its controller mapping database -- it would still show up in
+`joy.cpl` and this log line, but none of the mappings above would work
+for it (only Xbox/PS-style pads SDL's database covers are supported;
+there's no raw joystick-axis fallback by design, since that's exactly
+the "hard-coded, device-specific button index" this was asked to
+avoid). A gamepad plugged in after launch is picked up via
+`CONTROLLERDEVICEADDED` (same diagnostics logged then); unplugging
+mid-race is handled by `get_primary_controller()` lazily dropping
+disconnected entries, so input just falls back to keyboard-only with no
+crash. Keyboard controls keep working unmodified throughout -- adding
+gamepad support never removes or changes anything about them, and the
+game starts and runs normally (headless tests included) with no gamepad
+connected at all.
+
+**Needs the actual Xbox controller hardware to verify** (this session
+has no gamepad, real or virtual, to test against): whether Windows'
+Xbox controller is actually recognized as `sdl_game_controller=True`
+(expected, since Xbox pads are in SDL's built-in database, but not
+something this session can confirm), whether the printed diagnostics
+line looks sane for it, whether `0.18`/`0.5`/`250ms` feel right for
+steering deadzone / menu debounce, and whether Reset's gamepad path
+(previously implemented but never actually gamepad-tested either) now
+works end-to-end.
+
 ### Reset, for switching players at a booth (2026-09-04)
 
 `Restart` (`R`) redoes the current race with the same BGM and settings.
@@ -442,15 +509,15 @@ Available from every screen: SELECT MUSIC, mid-race, after a finish,
 after time-up.
 
 `Backspace` resets immediately. A gamepad's Select/Back button must be
-held for about a second first (`input_reset.GamepadResetHold`,
+held for about a second first (`gamepad.GamepadResetHold`,
 `RESET_HOLD_MS`), so a brief accidental press at a booth doesn't wipe
-someone's race. Gamepad support is new (there was none before): it uses
-pygame's SDL_GameController-backed events
+someone's race. Uses pygame's SDL_GameController-backed events
 (`CONTROLLER_BUTTON_BACK`/`CONTROLLERBUTTONDOWN`/`UP`), so "Select/Back"
 means the same physical button across different Xbox/PS-style pads
-instead of a hardware-specific button index -- untested on the actual
-exhibit controller yet (see "What to check on the real accessory"
-below).
+instead of a hardware-specific button index -- this was the only
+gamepad-driven input in the game until the fuller Xbox controller
+support above (2026-09-04) added everything else (steering/accelerate/
+brake/menu navigation).
 
 Reset never touches `config.json` or the calibrated viewports, and never
 calls `pygame.quit()` / recreates the window -- `game.run()`'s top-level
@@ -905,9 +972,12 @@ sfx_test.py              SFX audition tool (`--sfx-test`): live engine
                         screech X/Y/Z preset + on-demand playback, and
                         `--export-wav` for offline WAV previews (never
                         committed, see .gitignore's debug_wav/ entry)
-input_reset.py            shared Reset input plumbing (Select/Back
-                        gamepad hold-to-reset tracking, safe gamepad
-                        open) used by both music.py and game.py
+gamepad.py               Xbox/PS-style gamepad support: device detection
+                        + startup diagnostics, SDL GameController-mapped
+                        steering/accel/brake/menu-nav, Select/Back
+                        hold-to-reset, hot-plug -- used by music.py and
+                        game.py (renamed from input_reset.py, whose only
+                        job used to be the Reset hold)
 config.py                Config/Rect dataclasses, JSON load/save, clamping
 config.json               real-hardware-verified calibration + disparity
                         safety settings (committed)
