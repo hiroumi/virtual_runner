@@ -118,7 +118,15 @@ ENGINE_PRESETS: dict[str, EnginePreset] = {
         growl_weight_idle=0.06, growl_weight_max=0.40,
         noise_weight=0.07,
         saturation_drive=1.2,
-        volume=0.8,
+        # 2026-09-04, sixth pass: confirmed as the closest-to-imagined
+        # preset on real hardware ("最初が一番イメージにちかい" -- the
+        # default, this one) and the buzzer-y quality was gone, but it
+        # still read as louder than the BGM. Waveform/drive are untouched
+        # (the tone itself was praised) -- only the output gain moved,
+        # 0.8 -> 0.6 (simulated effective RMS ~0.47-0.49 -> ~0.35-0.37,
+        # a ~2.5dB cut), bringing it under BGM_VOLUME=0.65 (music.py)
+        # instead of above it. See docs/PHASE2_RACE_LOG.md.
+        volume=0.6,
     ),
     "CHIP ENGINE": EnginePreset(
         name="CHIP ENGINE",

@@ -632,6 +632,16 @@ python sfx_test.py --export-wav <dir>   # writes 12 short WAVs (one per
                                     # synthesis, no display/mixer needed.
 ```
 
+**2026-09-04, sixth pass: real-hardware comparison of the three presets.**
+`ARCADE ENGINE` (the default) was picked as closest to the intended
+sound, the buzzer-y quality was gone, and the throttle-on/off RPM feel
+read as natural -- confirming both the waveform redesign and the RPM
+model worked as intended. The one remaining note was "still louder than
+the BGM," so only `ARCADE ENGINE`'s `volume` moved, `0.8 -> 0.6`
+(simulated effective RMS ~0.47-0.49 -> ~0.35-0.37) -- its waveform/drive
+are untouched, since the tone itself was the part that was praised.
+`LOW RUMBLE`/`CHIP ENGINE` are unevaluated and unchanged.
+
 ### How the road gets its stereo effect
 
 Every sprite (trees, traffic cars, the player's own car, HUD) goes
