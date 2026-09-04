@@ -505,7 +505,23 @@ simulation to raise effective loudness roughly 2.7-4.4x while keeping
 peaks under 1.0. The debug overlay (`D`) now also shows the engine's
 current pitch bucket and whether tire screech is playing, so a future
 hardware check can tell "still too quiet" apart from "not triggering at
-all." See docs/PHASE2_RACE_LOG.md for the numbers.
+all."
+
+**2026-09-04, second pass: real-hardware feedback (after Reset checked out
+fine) was that the SFX were still barely noticeable.** Both volumes are
+now at `1.0` -- the max `pygame.mixer.Sound.set_volume` accepts, no more
+headroom on that knob -- and the saturation drives pushed further
+(`ENGINE_SATURATION_DRIVE`: 2.5 -> 5.0, `TIRE_SCREECH_SATURATION_DRIVE`:
+1.6 -> 2.4, tire kept gentler since noise-based content collapses into
+flat static at a much lower drive than a tonal engine drone does).
+Simulated effective RMS: engine 0.525 -> 0.808, tire 0.319 -> 0.483
+(peaks still safely under 1.0). Expect a noticeably grittier engine tone
+now, not just a louder version of the old one -- if that reads as
+distortion rather than punch, `ENGINE_SATURATION_DRIVE` is the knob to
+back off. If it's *still* too quiet after this, there's no more volume
+headroom left to raise -- the next lever would be the waveform itself
+(harmonic mix, frequency range) rather than gain. See
+docs/PHASE2_RACE_LOG.md for the full numbers.
 
 ### How the road gets its stereo effect
 
