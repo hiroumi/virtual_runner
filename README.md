@@ -894,7 +894,7 @@ checked against the actual left/right direction on real hardware.
 Traffic cars (previously the same flat `draw_car()` rectangle as the
 player) are now 6 red/black pixel-art vehicles: `sports_coupe`,
 `boxy_sedan`, `compact_hatchback`, `panel_van`, `muscle_car`,
-`pickup_truck` (`assets/cars/enemies/*.png`, one shared 68x56px
+`pickup_truck` (`assets/cars/enemies/*.png`, one shared 75x58px
 transparent canvas). Built by `scripts/build_enemy_sprites.py` from a
 user-supplied 2-row x 3-col sheet (`assets/source/enemy_cars_sheet.png`).
 That sheet's alpha was fully opaque -- the checkerboard "transparency"
@@ -906,19 +906,23 @@ low-saturation (checkerboard-colored); only pixels actually reachable
 from the edge through more checkerboard get alpha=0, so an interior
 bright patch not connected to the border survives untouched.
 
-Unlike the player's 5 poses (near-identical footprints, sized to match
-each other for flicker-free switching), the spec here explicitly asks
-that the van/pickup keep their real size advantage over the sedans --
-so instead of independently fitting each car to its own box, the
-script picks **one shared scale factor** (sized so the single largest
-source car fits the target box) and applies it to all 6, then places
-each scaled crop on one common transparent canvas with its own
-bounding-box bottom-center (tire contact) at one fixed anchor point.
-The result: every vehicle's ground-contact point lands at the same
-pixel regardless of shape, while a panel_van still reads as visibly
-bigger than a compact_hatchback. `pygame.transform.scale()` (not
-`smoothscale()`) throughout, matching the "nearest-neighbor, no
-antialiasing" requirement.
+Each of the 6 crops is resized **independently** to its own explicit
+(width, height) target in px -- `WIDTH_MULT`/`HEIGHT_MULT` in
+`build_enemy_sprites.py`, both relative to `boxy_sedan` ("standard").
+Width is kept within +-5% across all 6 (`compact_hatchback` -5%,
+`muscle_car` +5%, everyone else unchanged); height moves more freely
+for shape character (`sports_coupe` -22% for a low profile, `panel_van`
++12.5% for a tall boxy look, `pickup_truck` -5%). This replaced a first
+pass that applied one shared scale factor to all 6 -- real-hardware
+feedback found that approach let panel_van, which happened to fill a
+much larger fraction of its own bounding box than the other vehicles,
+read as far bigger than the player even though its *outer* canvas was
+scaled identically to everyone else's. Each resized crop is placed on
+one common transparent canvas with its own bounding-box bottom-center
+(tire contact) at one fixed anchor point, so every vehicle's
+ground-contact point lands at the same pixel regardless of shape.
+`pygame.transform.scale()` (not `smoothscale()`) throughout, matching
+the "nearest-neighbor, no antialiasing" requirement.
 
 **Vehicle assignment**: each `TrafficCar` gets a `sprite_id` once, at
 `_build_traffic()` construction time, from a weighted draw
@@ -939,16 +943,42 @@ another (`test_traffic_lane_position_and_speed_are_unchanged_by_sprite_id_assign
 locks in that the pre-existing 22-car (z, x, speed) layout is
 byte-for-byte unchanged from before `sprite_id` existed.
 
-Display size still comes entirely from the existing distance-based
-`scale = max(0.35, sw / (ROAD_WIDTH * 3.5))` that `draw_car()` always
-used -- only *what* gets drawn at that scale changed, so near/far
-growth, hill-crest occlusion, and both eyes sharing one scaled surface
-(computed once outside the per-eye draw closure) all work exactly like
-the player sprite integration. Collision detection was untouched by
-this change since it only ever compared `player.z`/`car.z`/`player.x`/
-`car.x` in world coordinates, never sprite geometry. Missing/broken
-PNGs degrade to the original `draw_car()` rectangle for every traffic
-car, same fallback philosophy as everywhere else in this project.
+**Display size** no longer comes from the raw distance scale
+(`scale = max(0.35, sw / (ROAD_WIDTH * 3.5))`, still used unchanged for
+`draw_car()`'s rectangle fallback) applied directly to the sprite --
+real-hardware testing found two problems with that: (1) right as a car
+reaches the player's own depth (`world_z == cam_z`, where `project()`'s
+`trans_z` floors at `SEGMENT_LENGTH`), the raw scale blows up to several
+times the viewport width; (2) calibrating a single constant multiplier
+against that one point shrank 60-90m traffic to a few px, defeating the
+original "vehicle types should stay recognizable at range" requirement
+-- accurate pinhole-camera perspective, poor gameplay legibility.
+
+Instead, `ENEMY_SPRITE_TARGET_RATIO_POINTS` defines, directly, what
+fraction of the player's own on-screen width a standard car (boxy_sedan)
+should be at a handful of distances -- `(3.0, 1.00)` (same depth as the
+player), `(30.0, 0.40)`, `(60.0, 0.175)`, `(90.0, 0.10)`, holding flat
+beyond the last point. `_enemy_target_ratio()` interpolates between
+consecutive points with a smoothstep blend; because the points
+themselves are monotonic (ascending distance, descending ratio), the
+interpolated curve is provably monotonic too -- no local dip/pop as a
+car crosses 90m/60m/30m (an earlier version that multiplied a "boost"
+onto the raw scale instead wasn't: boost and scale individually smooth
+doesn't imply their product is, and a dedicated test caught a small
+non-monotonic wobble around 10-20m from exactly that). A hard
+`ENEMY_SPRITE_MAX_WIDTH_RATIO=1.05` cap, evaluated against each
+vehicle's own opaque pixel width (precomputed once per sprite at load
+time, not from raw canvas width, since canvas width is uniform across
+all 6 but each car's own visible footprint within it isn't), backs this
+up regardless of what the curve computes -- catches `muscle_car`'s own
++5% width sitting right at that boundary at the closest point, and any
+future curve mistuning. Hill-crest occlusion and both eyes sharing one
+scaled surface (computed once outside the per-eye draw closure) work
+exactly like before. Collision detection was untouched by any of this,
+since it only ever compared `player.z`/`car.z`/`player.x`/`car.x` in
+world coordinates, never sprite geometry. Missing/broken PNGs degrade to
+the original `draw_car()` rectangle for every traffic car, same fallback
+philosophy as everywhere else in this project.
 
 ### Road elevation: hills, a crest, and a valley
 

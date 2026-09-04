@@ -1,7 +1,8 @@
-"""Builds the 6 assets/cars/enemies/*.png traffic-car sprites (2026-09-05)
-from assets/source/enemy_cars_sheet.png -- a 2-row x 3-col sheet the user
-supplied, read left-to-right, top-to-bottom as: sports_coupe, boxy_sedan,
-compact_hatchback / panel_van, muscle_car, pickup_truck.
+"""Builds the 6 assets/cars/enemies/*.png traffic-car sprites (2026-09-05,
+second pass) from assets/source/enemy_cars_sheet.png -- a 2-row x 3-col
+sheet the user supplied, read left-to-right, top-to-bottom as:
+sports_coupe, boxy_sedan, compact_hatchback / panel_van, muscle_car,
+pickup_truck.
 
 Like the earlier player-car sheet (see assets/cars/player/
 build_from_spritesheet.py), this sheet's alpha channel is fully opaque --
@@ -15,12 +16,22 @@ background-like pixels get alpha=0. An interior bright patch that isn't
 4-connected to the border through background-colored pixels survives
 untouched.
 
-Regular cars and the van/pickup are intentionally *not* forced to the
-same pixel footprint -- a single shared scale factor (chosen so the
-largest car fits the target box) is applied to all 6 crops so their
-relative size differences from the source sheet are preserved, then all
-6 are placed on one shared transparent canvas with their own bounding
-box's bottom-center (tire contact) at one fixed anchor point.
+2026-09-05 real-hardware feedback: the first pass (one shared scale
+factor for all 6, preserving the source sheet's own relative
+proportions) made panel_van look far too big up close -- because that
+car's crop happened to fill a much larger fraction of its own bounding
+box than e.g. sports_coupe's did, "same outer canvas size, scaled by
+the same factor" did NOT mean "same visual weight". This pass instead
+**normalizes each of the 6 crops independently** to its own explicit
+(width, height) target in pixels -- WIDTH_MULT/HEIGHT_MULT below, both
+relative to boxy_sedan ("standard") -- rather than trying to preserve
+whatever proportions the source photo happened to have. Width is kept
+within +-5% across all 6 (matching the requirement that vehicle *type*
+shouldn't change how big a car reads at a given distance); only height
+is allowed to move more, e.g. panel_van +12.5%, to keep some of the
+shape character without changing its footprint. See game.py's
+ENEMY_SPRITE_DISPLAY_SCALE for how this canvas's absolute pixel size is
+then calibrated against the player car's own on-screen width.
 
 Run this to rebuild the 6 PNGs from the source sheet (e.g. after the
 user supplies a revised sheet):
@@ -55,16 +66,39 @@ BG_BRIGHTNESS_MIN = 200
 BG_SATURATION_MAX = 30
 
 # Padding (source-resolution px) kept around each car's crop before
-# placing it on the shared canvas.
+# resizing it to its own target box below.
 CROP_PAD = 4
 
-# Target box (post shared-scale) that the single largest car must fit
-# inside -- chosen from the spec's "regular cars ~64x40-88x48px, van/
-# pickup keep their extra height/width" guidance. The shared scale factor
-# is derived from whichever source car is actually largest, so this is a
-# ceiling, not every car's actual size.
-MAX_CANVAS_SIZE = (92, 56)
-CANVAS_PAD = 4
+# Each car's own target (width, height), in px, independent of the
+# others and independent of the source crop's native aspect ratio --
+# 2026-09-05 real-hardware feedback specifically asked for direct control
+# of each axis per vehicle (a non-uniform resize), not proportional
+# scaling from whatever the source photo's crop happened to look like.
+# WIDTH_MULT/HEIGHT_MULT are both relative to boxy_sedan ("standard"),
+# applied to BASE_VEHICLE_WIDTH_PX/BASE_VEHICLE_HEIGHT_PX below.
+BASE_VEHICLE_WIDTH_PX = 64
+BASE_VEHICLE_HEIGHT_PX = 44  # boxy_sedan's own height at BASE_VEHICLE_WIDTH_PX
+
+# fmt: off
+WIDTH_MULT = {
+    "sports_coupe":       1.00,  # standard width
+    "boxy_sedan":         1.00,  # standard (this row defines the baseline)
+    "compact_hatchback":  0.95,  # ~5% smaller than standard
+    "panel_van":          1.00,  # standard width -- only height grows
+    "muscle_car":         1.05,  # ~5% wider than standard
+    "pickup_truck":       1.00,  # standard width
+}
+HEIGHT_MULT = {
+    "sports_coupe":       0.78,  # low profile
+    "boxy_sedan":         1.00,  # standard
+    "compact_hatchback":  0.95,  # ~5% smaller than standard (both axes)
+    "panel_van":          1.125,  # +12.5%, midpoint of the requested 10-15%
+    "muscle_car":         1.00,  # unchanged -- spec only asked for wider, not taller
+    "pickup_truck":       0.95,  # a little lower than standard, clearly below panel_van
+}
+# fmt: on
+
+CANVAS_PAD = 4  # transparent margin (px) kept around the largest resized car
 
 
 def _flood_fill_background(is_bg_candidate: "np.ndarray") -> "np.ndarray":
@@ -121,7 +155,6 @@ def build_sprites(sheet_path: Path = SOURCE_SHEET) -> dict[str, pygame.Surface]:
     cell_w, cell_h = w // GRID_COLS, h // GRID_ROWS
 
     crops: dict[str, pygame.Surface] = {}
-    native_sizes: dict[str, tuple[int, int]] = {}
     for row in range(GRID_ROWS):
         for col in range(GRID_COLS):
             name = SPRITE_NAMES[row * GRID_COLS + col]
@@ -146,35 +179,36 @@ def build_sprites(sheet_path: Path = SOURCE_SHEET) -> dict[str, pygame.Surface]:
             del px, pa
 
             crops[name] = crop
-            native_sizes[name] = (crop_w, crop_h)
 
-    # One shared scale factor for all 6, derived from whichever source
-    # car is actually largest -- this is what keeps the van/pickup's
-    # real size advantage over the sedans intact instead of normalizing
-    # everyone to the same footprint.
-    max_native_w = max(sz[0] for sz in native_sizes.values())
-    max_native_h = max(sz[1] for sz in native_sizes.values())
-    fit_w = (MAX_CANVAS_SIZE[0] - 2 * CANVAS_PAD) / max_native_w
-    fit_h = (MAX_CANVAS_SIZE[1] - 2 * CANVAS_PAD) / max_native_h
-    shared_scale = min(fit_w, fit_h)
+    # Each car resized independently to its own explicit target box --
+    # deliberately NOT preserving the source crop's native aspect ratio
+    # (that's what let panel_van dominate its canvas in the first pass).
+    # See WIDTH_MULT/HEIGHT_MULT's docstring above.
+    targets: dict[str, tuple[int, int]] = {
+        name: (
+            max(1, round(BASE_VEHICLE_WIDTH_PX * WIDTH_MULT[name])),
+            max(1, round(BASE_VEHICLE_HEIGHT_PX * HEIGHT_MULT[name])),
+        )
+        for name in SPRITE_NAMES
+    }
 
-    canvas_w = int(round(max_native_w * shared_scale)) + 2 * CANVAS_PAD
-    canvas_h = int(round(max_native_h * shared_scale)) + 2 * CANVAS_PAD
+    canvas_w = max(t[0] for t in targets.values()) + 2 * CANVAS_PAD
+    canvas_h = max(t[1] for t in targets.values()) + 2 * CANVAS_PAD
     anchor = (canvas_w // 2, canvas_h - CANVAS_PAD)
 
     sprites: dict[str, pygame.Surface] = {}
     for name, crop in crops.items():
-        native_w, native_h = native_sizes[name]
-        scaled_w = max(1, int(round(native_w * shared_scale)))
-        scaled_h = max(1, int(round(native_h * shared_scale)))
+        target_w, target_h = targets[name]
         # pygame.transform.scale (not smoothscale) -- nearest-neighbor
-        # sampling, no interpolation/antialiasing, per the spec.
-        scaled = pygame.transform.scale(crop, (scaled_w, scaled_h))
+        # sampling, no interpolation/antialiasing, per the spec. A
+        # non-uniform resize (target aspect need not match the crop's own
+        # native aspect) is intentional here -- see WIDTH_MULT/HEIGHT_MULT.
+        scaled = pygame.transform.scale(crop, (target_w, target_h))
 
         canvas = pygame.Surface((canvas_w, canvas_h), pygame.SRCALPHA)
         canvas.fill((0, 0, 0, 0))
-        dest_x = anchor[0] - scaled_w // 2
-        dest_y = anchor[1] - scaled_h
+        dest_x = anchor[0] - target_w // 2
+        dest_y = anchor[1] - target_h
         canvas.blit(scaled, (dest_x, dest_y))
         sprites[name] = canvas
 

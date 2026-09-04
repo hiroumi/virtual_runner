@@ -21,6 +21,7 @@ import math
 import random
 from pathlib import Path
 
+import numpy as np
 import pygame
 
 from config import load_config, save_config
@@ -202,11 +203,10 @@ def _load_player_sprites() -> dict[str, pygame.Surface]:
 # together if the sheet is ever rebuilt at a different size, same caveat as
 # the player sprites above). Unlike the player car's 5 poses (near-identical
 # footprints, so a flicker-free switch needs everyone the same size), these
-# 6 crops intentionally differ in size -- the van/pickup are taller/wider
-# than the sedans, matching the source art -- so what's actually shared is
-# just the canvas they sit on and the bottom-center anchor point within it:
-# every vehicle's own tire-contact point lands at the same (cx, cy) even
-# though their silhouettes differ.
+# 6 crops intentionally differ in size -- the van/pickup are taller than the
+# sedans -- so what's actually shared is just the canvas they sit on and the
+# bottom-center anchor point within it: every vehicle's own tire-contact
+# point lands at the same (cx, cy) even though their silhouettes differ.
 ENEMY_ASSETS_DIR = Path(__file__).resolve().parent / "assets" / "cars" / "enemies"
 ENEMY_SPRITE_KEYS = (
     "sports_coupe", "boxy_sedan", "compact_hatchback",
@@ -215,8 +215,111 @@ ENEMY_SPRITE_KEYS = (
 # Spawn-rate weights, same order as ENEMY_SPRITE_KEYS -- the "初期案" ratios
 # from CLAUDE_CODE_ENEMY_CARS_INSTRUCTIONS.txt.
 ENEMY_SPRITE_WEIGHTS = (0.20, 0.20, 0.20, 0.15, 0.15, 0.10)
-ENEMY_SPRITE_CANVAS_SIZE = (68, 56)
-ENEMY_SPRITE_ANCHOR = (34, 56)  # bottom-center
+ENEMY_SPRITE_CANVAS_SIZE = (75, 58)
+ENEMY_SPRITE_ANCHOR = (37, 58)  # bottom-center
+
+# player_sprites["straight"]'s own opaque width, in px -- the "how wide is
+# the player car, on screen" reference the whole sizing scheme below is
+# calibrated against.
+PLAYER_REFERENCE_WIDTH_PX = 71
+
+# boxy_sedan's own opaque width within ENEMY_SPRITE_CANVAS_SIZE -- the
+# "standard" vehicle every ENEMY_SPRITE_TARGET_RATIO_POINTS target below is
+# expressed relative to (other vehicle types automatically come out wider/
+# narrower than this in exact proportion to their own WIDTH_MULT baked in
+# by scripts/build_enemy_sprites.py, since the same sprite_scale is applied
+# to every vehicle's canvas).
+ENEMY_REFERENCE_OPAQUE_WIDTH_PX = 63
+
+# 2026-09-05, two rounds of real-hardware feedback:
+#   1st: an up-close panel_van looked far bigger than the player car --
+#        _draw_traffic_car was drawing sprites at draw_car()'s old
+#        perspective scale directly (`sw / (ROAD_WIDTH * 3.5)`), which
+#        blows up to several times the viewport width as a car's depth
+#        approaches the player's (project()'s trans_z floor at
+#        SEGMENT_LENGTH).
+#   2nd: calibrating that scale down so a "standard" car (boxy_sedan)
+#        exactly matches the player's width right at that closest depth
+#        fixed the up-close case, but as a side effect shrank far/mid
+#        traffic to a few illegible px -- accurate pinhole-camera
+#        perspective, but poor gameplay legibility (the original spec
+#        explicitly asked that vehicle types stay recognizable at range).
+#
+# ENEMY_SPRITE_TARGET_RATIO_POINTS below replaces the raw perspective
+# scale for the sprite path entirely (draw_car()'s rectangle fallback
+# still uses the plain distance `scale` -- see _draw_traffic_car) with an
+# explicit, hand-tuned curve: for each distance `tz` (world units ahead,
+# project()'s already-floored trans_z), what fraction of
+# PLAYER_REFERENCE_WIDTH_PX should the *standard* vehicle's own opaque
+# width be. Points are (tz, target_ratio), tz strictly ascending and
+# target_ratio strictly descending -- that monotonic pairing is what
+# guarantees _enemy_target_ratio's smoothstep interpolation never dips or
+# pops between control points (unlike an earlier version of this curve
+# that multiplied a "boost" onto the raw 1/tz scale: boost and scale
+# individually smooth doesn't imply their product is). Beyond the last
+# point the ratio holds constant, same reasoning as the perspective
+# scale's own 0.35 floor plateauing at long range.
+#
+# Values: ~90m -> ~10%, ~60m -> ~17.5%, ~30m -> ~40%, at the closest
+# representable depth (project()'s trans_z floor, "same depth as the
+# player") -> exactly 100%, i.e. matching the player's own on-screen
+# width, per the real-hardware ask. Re-tune by editing the ratios
+# directly and re-running the tests in the
+# "Enemy car sizing" section of tests/test_game.py; see
+# docs/PHASE2_RACE_LOG.md's "2026-09-05（16回目）" section for the
+# original derivation.
+ENEMY_SPRITE_TARGET_RATIO_POINTS = (
+    (3.0, 1.00),    # same-depth calibration point (project()'s trans_z floor)
+    (30.0, 0.40),
+    (60.0, 0.175),
+    (90.0, 0.10),
+)
+
+# Hard safety cap, independent of the curve above: no traffic car,
+# regardless of vehicle type or distance, may ever draw wider on screen
+# than this fraction of the player's own width -- catches muscle_car's
+# own +5% WIDTH_MULT (which would otherwise land at ~105% exactly right
+# at the calibration point) and any future curve mistuning.
+ENEMY_SPRITE_MAX_WIDTH_RATIO = 1.05
+
+
+def _smoothstep(edge0: float, edge1: float, x: float) -> float:
+    t = max(0.0, min(1.0, (x - edge0) / (edge1 - edge0)))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _enemy_target_ratio(tz: float) -> float:
+    """ENEMY_SPRITE_TARGET_RATIO_POINTS's target_ratio for a car at
+    distance `tz` -- 1.0 right at the same-depth calibration point,
+    smoothly falling at greater distances, holding flat beyond the last
+    control point. Strictly monotonic in tz by construction (see the
+    control points' own docstring), so displayed width never dips as a
+    car gets closer."""
+    points = ENEMY_SPRITE_TARGET_RATIO_POINTS
+    if tz <= points[0][0]:
+        return points[0][1]
+    if tz >= points[-1][0]:
+        return points[-1][1]
+    for (tz0, r0), (tz1, r1) in zip(points, points[1:]):
+        if tz0 <= tz <= tz1:
+            t = _smoothstep(tz0, tz1, tz)
+            return r0 + (r1 - r0) * t
+    return points[-1][1]  # unreachable given the tz range checks above
+
+
+def _opaque_sprite_width(surf: pygame.Surface) -> int:
+    """The vehicle's own visible pixel width within its canvas (as
+    opposed to the canvas's full width, which includes transparent
+    padding that differs in proportion per vehicle) -- what
+    ENEMY_REFERENCE_OPAQUE_WIDTH_PX and ENEMY_SPRITE_MAX_WIDTH_RATIO's
+    clamp are both defined in terms of."""
+    alpha = pygame.surfarray.pixels_alpha(surf)
+    mask = alpha > 0
+    if not mask.any():
+        return surf.get_width()
+    xs = np.where(mask.any(axis=1))[0]
+    return int(xs.max() - xs.min() + 1)
+
 
 # Deliberately its own fixed seed, separate from _build_traffic's lane/
 # position rng (random.Random(42)) -- sprite_id selection must never draw
@@ -412,6 +515,12 @@ class Game:
         self._player_sprite_index = PLAYER_SPRITE_KEYS.index("straight")
         self._player_sprites = _load_player_sprites()
         self._enemy_sprites = _load_enemy_sprites()
+        # Precomputed once (not per frame/per draw) -- each sprite's own
+        # opaque pixel width, used by _draw_traffic_car's
+        # ENEMY_SPRITE_MAX_WIDTH_RATIO clamp.
+        self._enemy_sprite_opaque_widths = {
+            key: _opaque_sprite_width(surf) for key, surf in self._enemy_sprites.items()
+        }
         self._road_base_idx = 0
         self._road_clip_before_n: list[float] = []  # crest occlusion, see _draw_road
 
@@ -955,26 +1064,38 @@ class Game:
         if not self._sprite_visible(car.z, sy):
             return
 
-        # Same distance-based scale draw_car() always used -- only *what*
-        # gets drawn at that scale changes below, not the perspective math
-        # (so near/far growth and the existing DRAW_DISTANCE/occlusion
-        # behavior are untouched).
+        # draw_car()'s rectangle fallback still uses this plain
+        # distance-based perspective scale, unchanged. The sprite path
+        # below uses ENEMY_SPRITE_TARGET_RATIO_POINTS instead (see its
+        # docstring for why) -- `scale` itself no longer drives sprite
+        # size at all, only the fallback rectangle.
         scale = max(0.35, sw / (ROAD_WIDTH * 3.5))
         sprite = self._enemy_sprites.get(car.sprite_id)
         scaled_sprite = None
         dest_x = dest_y = 0.0
         if sprite is not None:
+            target_reference_w = PLAYER_REFERENCE_WIDTH_PX * _enemy_target_ratio(tz)
+            sprite_scale = target_reference_w / ENEMY_REFERENCE_OPAQUE_WIDTH_PX
+            # Hard cap: whatever the curve above says, this car's own
+            # visible width may never exceed ENEMY_SPRITE_MAX_WIDTH_RATIO
+            # of the player's on-screen width.
+            opaque_w = self._enemy_sprite_opaque_widths.get(car.sprite_id)
+            if opaque_w:
+                max_sprite_scale = (
+                    PLAYER_REFERENCE_WIDTH_PX * ENEMY_SPRITE_MAX_WIDTH_RATIO
+                ) / opaque_w
+                sprite_scale = min(sprite_scale, max_sprite_scale)
             sprite_w, sprite_h = sprite.get_size()
-            scaled_w = max(1, round(sprite_w * scale))
-            scaled_h = max(1, round(sprite_h * scale))
+            scaled_w = max(1, round(sprite_w * sprite_scale))
+            scaled_h = max(1, round(sprite_h * sprite_scale))
             # pygame.transform.scale (not smoothscale) -- nearest-neighbor
             # sampling, no interpolation/antialiasing, matching the source
             # pixel art. Scaled once here (not inside draw()) so both eyes
             # blit the exact same surface at the exact same size.
             scaled_sprite = pygame.transform.scale(sprite, (scaled_w, scaled_h))
             anchor_x, anchor_y = ENEMY_SPRITE_ANCHOR
-            dest_x = sx - anchor_x * scale
-            dest_y = sy - anchor_y * scale
+            dest_x = sx - anchor_x * sprite_scale
+            dest_y = sy - anchor_y * sprite_scale
 
         def draw(surf: pygame.Surface, ox: float) -> None:
             if scaled_sprite is not None:
