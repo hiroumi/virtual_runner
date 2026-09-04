@@ -12,7 +12,7 @@ import pygame
 import pytest
 
 from config import default_config
-from music import BGM_DIR, MusicPlayer, MusicSelectScreen, TRACKS, _fit_text
+from music import BGM_DIR, BGM_VOLUME, MusicPlayer, MusicSelectScreen, TRACKS, _fit_text
 from stereo_renderer import StereoRenderer
 
 BGM_ASSETS_PRESENT = BGM_DIR.is_dir() and any(BGM_DIR.glob("*.mp3"))
@@ -117,6 +117,25 @@ def test_real_tracks_all_load_and_play():
         ok = m.play_selected(loop=False, fade_ms=0)
         assert ok is True, m.last_error
         assert m.last_error is None
+    pygame.mixer.music.stop()
+    pygame.quit()
+
+
+def test_bgm_volume_constant_is_60_to_70_percent():
+    # Spec: BGM should start at roughly 60-70% of full volume.
+    assert 0.6 <= BGM_VOLUME <= 0.7
+
+
+@pytest.mark.skipif(not BGM_ASSETS_PRESENT, reason="bgm/ assets not present")
+def test_playing_a_track_sets_mixer_volume_to_bgm_volume():
+    pygame.init()
+    m = MusicPlayer()
+    pygame.mixer.music.set_volume(1.0)  # start from a different value
+    ok = m.play_selected(loop=False, fade_ms=0)
+    assert ok is True, m.last_error
+    # SDL_mixer quantizes volume internally (observed ~0.648 for 0.65 under
+    # the dummy driver), so allow a small tolerance rather than exact match.
+    assert pygame.mixer.music.get_volume() == pytest.approx(BGM_VOLUME, abs=0.01)
     pygame.mixer.music.stop()
     pygame.quit()
 

@@ -26,6 +26,9 @@ TRACKS: list[tuple[str, str]] = [
 
 PREVIEW_FADE_MS = 250  # short fade-in when switching preview tracks
 LOOP_FADE_MS = 400     # short fade-in when the race's looped playback begins
+BGM_VOLUME = 0.65      # 60-70% of full scale, per spec -- pygame.mixer.music
+                        # has no default other than 1.0 (full), so this must
+                        # be set explicitly on every load/play (see below)
 
 BLACK = (0, 0, 0)
 TITLE_COLOR = (255, 90, 90)
@@ -94,6 +97,10 @@ class MusicPlayer:
         self.last_error = None
         try:
             pygame.mixer.music.load(str(path))
+            # Set before play(): with fade_ms>0 this is the volume the
+            # fade-in ramps *to*, not an instant jump that would cut the
+            # fade short.
+            pygame.mixer.music.set_volume(BGM_VOLUME)
             pygame.mixer.music.play(loops=(-1 if loop else 0), fade_ms=fade_ms)
             return True
         except (pygame.error, OSError) as exc:

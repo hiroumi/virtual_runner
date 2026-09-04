@@ -400,6 +400,12 @@ BGM file never crashes the game, only shows a short error line (a
 `_fit_text` helper keeps it from overflowing the narrow viewport even for
 an unusually long filename) and leaves the game running with no BGM.
 
+BGM plays at a fixed `BGM_VOLUME = 0.65` (65%, set via
+`pygame.mixer.music.set_volume()` right before `play()` so a fade-in
+ramps up to that level instead of jumping to it) -- this was missing
+until 2026-09-04, so both the preview and the in-race loop had been
+playing at full (100%) volume.
+
 ### Controls
 
 | Key | Action |
