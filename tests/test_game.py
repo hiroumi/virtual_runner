@@ -1606,11 +1606,35 @@ def test_palm_target_height_grows_monotonically_as_it_approaches():
             world_x, world_y, palm_z, cam_x, g.cam_elevation, g.player.z, width, height
         )
         distance_scale = max(0.3, sw / (game.ROAD_WIDTH * 6))
-        target_h = game.PALM_BASE_HEIGHT_PX * distance_scale * (opaque_h / ref_h)
+        target_h = (
+            game.PALM_BASE_HEIGHT_PX
+            * distance_scale
+            * (opaque_h / ref_h)
+            * game._palm_visual_scale(actual_tz)
+        )
         if prev_h is not None:
             assert target_h >= prev_h - 1e-6, (tz, target_h, prev_h)
         prev_h = target_h
     pygame.quit()
+
+
+def test_palm_visual_scale_curve_is_itself_monotonic_and_bounded():
+    # PALM_SCALE_POINTS/_palm_visual_scale in isolation: densely sample
+    # tz from well beyond the last control point down to well inside the
+    # first, and confirm the multiplier itself never increases as tz
+    # grows (i.e. never decreases as a palm approaches), holds flat
+    # beyond both ends, and never exceeds the closest control point's
+    # value (3.0) -- the "up to 3x, never more" real-hardware requirement.
+    tz_values = sorted({round(0.5 + i * 0.25, 2) for i in range(500)}, reverse=True)
+    prev_scale = None
+    for tz in tz_values:
+        scale = game._palm_visual_scale(tz)
+        assert scale <= game.PALM_SCALE_POINTS[0][1] + 1e-9
+        if prev_scale is not None:
+            assert scale >= prev_scale - 1e-9, (tz, scale, prev_scale)
+        prev_scale = scale
+    assert game._palm_visual_scale(0.0) == pytest.approx(game.PALM_SCALE_POINTS[0][1])
+    assert game._palm_visual_scale(1000.0) == pytest.approx(game.PALM_SCALE_POINTS[-1][1])
 
 
 @pytest.mark.skipif(not PALM_SPRITE_ASSETS_PRESENT, reason="palm sprite PNGs not present")

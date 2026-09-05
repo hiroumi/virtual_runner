@@ -1040,7 +1040,25 @@ are roughly the same distance away, shared across both eyes. Missing/
 broken PNGs fall back to the original procedural `draw_tree()` line-art,
 same fallback philosophy as everywhere else in this project. The `D`
 debug overlay shows a live count/sprite id/side/z line for on-screen
-palms. Details and real-hardware checklist: `docs/PHASE2_RACE_LOG.md`.
+palms.
+
+**On-screen size** went through two real-hardware rounds after the
+initial version above: at the same scale as the existing procedural
+trees, a palm was visible but too small to read as a palm rather than
+generic roadside clutter; a flat 3x multiplier fixed that up close but
+looked oversized at 60-90m. The settled fix is a distance-based curve,
+`PALM_SCALE_POINTS` -- `(3.0, 3.0)` (closest representable depth),
+`(15.0, 2.6)`, `(30.0, 2.0)`, `(60.0, 1.5)`, `(90.0, 1.25)`, holding flat
+beyond either end -- interpolated by `_palm_visual_scale()` with the same
+smoothstep-between-monotonic-control-points pattern as
+`ENEMY_SPRITE_TARGET_RATIO_POINTS`/`_enemy_target_ratio`. It multiplies
+only the palm's own perspective-derived width/height, ahead of the
+existing `PALM_MAX_HEIGHT_VIEWPORT_FRAC` cap and near-cull margin (both
+unchanged, now just operating on the enlarged value) -- the procedural
+trees, traffic cars, player car, and root-anchor/world-coordinate/
+parallax math are untouched. Confirmed on the real accessory: readable
+at range without looking oversized up close. Details:
+`docs/PHASE2_RACE_LOG.md`.
 
 ### Road elevation: hills, a crest, and a valley
 

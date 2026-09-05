@@ -436,6 +436,55 @@ PALM_RNG_SEED = 20260905_02
 # standard palm.
 PALM_BASE_HEIGHT_PX = 40
 
+# 2026-09-05 real-hardware feedback, round 1: at the same on-screen scale
+# as the existing procedural roadside trees (which this reuses, by
+# design), a palm was visible but too small to read as a palm rather
+# than generic roadside clutter. A flat PALM_VISUAL_SCALE=3.0 multiplier
+# on target_h_px fixed close-range legibility, but round 2 of real-
+# hardware feedback found that same flat 3x looked oversized at range
+# (90m+) even though it read naturally up close. Replaced with an
+# explicit per-distance curve, same pattern as
+# ENEMY_SPRITE_TARGET_RATIO_POINTS/_enemy_target_ratio: PALM_SCALE_POINTS
+# below gives (tz, multiplier) control points, ascending tz / descending
+# multiplier, and _palm_visual_scale() smoothstep-interpolates between
+# them -- monotonic by construction (same reasoning as the enemy curve's
+# own docstring: individually-smooth points multiplied together isn't
+# provably smooth, but the target values themselves interpolated are).
+# Applied to target_h_px before the safety cap/near-cull checks below,
+# so both still operate on the final (enlarged) size exactly as before.
+# Does not touch the procedural trees' own sizing, world coordinates,
+# road-side offset, parallax/disparity math, or the root anchor formula
+# in _draw_palm (which places the sprite's own (anchor_x, anchor_y)
+# point at the projected ground position (sx, sy) regardless of scale,
+# so a larger palm's root stays pinned to the ground rather than
+# floating). Re-tune by editing the multipliers directly and re-running
+# the "Palm size curve" tests in tests/test_game.py.
+PALM_SCALE_POINTS = (
+    (3.0, 3.0),     # closest representable depth (project()'s trans_z floor)
+    (15.0, 2.6),
+    (30.0, 2.0),
+    (60.0, 1.5),
+    (90.0, 1.25),
+)
+
+
+def _palm_visual_scale(tz: float) -> float:
+    """PALM_SCALE_POINTS's multiplier for a palm at distance `tz` --
+    largest at the closest representable depth, smoothly shrinking with
+    distance, holding flat beyond the last control point (>=90m) and at
+    the first (<=3m). Strictly monotonic in tz by construction, so a
+    palm's displayed size never dips/pops as it gets closer."""
+    points = PALM_SCALE_POINTS
+    if tz <= points[0][0]:
+        return points[0][1]
+    if tz >= points[-1][0]:
+        return points[-1][1]
+    for (tz0, s0), (tz1, s1) in zip(points, points[1:]):
+        if tz0 <= tz <= tz1:
+            t = _smoothstep(tz0, tz1, tz)
+            return s0 + (s1 - s0) * t
+    return points[-1][1]  # unreachable given the tz range checks above
+
 # Safety cap, expressed as a fraction of the *actual* per-eye viewport
 # height (self.renderer.left_surface.get_size()[1] at Game construction
 # time) rather than a fixed px count, per the "固定のマジックナンバーに
@@ -1349,7 +1398,7 @@ class Game:
 
         distance_scale = max(0.3, sw / (ROAD_WIDTH * 6))  # same formula _draw_decor_object uses
         height_ratio = opaque_h / reference_h  # this palm's own height relative to palm_straight
-        target_h_px = PALM_BASE_HEIGHT_PX * distance_scale * height_ratio
+        target_h_px = PALM_BASE_HEIGHT_PX * distance_scale * height_ratio * _palm_visual_scale(tz)
         if target_h_px > self._palm_max_height_px * PALM_NEAR_CULL_MARGIN:
             return  # too close -- cull promptly rather than freeze at the capped size
         target_h_px = min(target_h_px, self._palm_max_height_px)
