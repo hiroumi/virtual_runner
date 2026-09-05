@@ -25,6 +25,9 @@ PLAYER_SPRITE_ASSETS_PRESENT = all(
 ENEMY_SPRITE_ASSETS_PRESENT = all(
     (game.ENEMY_ASSETS_DIR / f"{key}.png").is_file() for key in game.ENEMY_SPRITE_KEYS
 )
+PALM_SPRITE_ASSETS_PRESENT = all(
+    (game.PALM_ASSETS_DIR / f"{key}.png").is_file() for key in game.PALM_SPRITE_KEYS
+)
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +53,17 @@ def _reset_enemy_sprite_cache():
     yield
     game._enemy_sprites_cache["loaded"] = False
     game._enemy_sprites_cache["sprites"] = {}
+
+
+@pytest.fixture(autouse=True)
+def _reset_palm_sprite_cache():
+    # Same reasoning as _reset_player_sprite_cache above, for
+    # game._load_palm_sprites()'s module-level cache.
+    game._palm_sprites_cache["loaded"] = False
+    game._palm_sprites_cache["sprites"] = {}
+    yield
+    game._palm_sprites_cache["loaded"] = False
+    game._palm_sprites_cache["sprites"] = {}
 
 
 class FakeKeys(dict):
@@ -1402,5 +1416,373 @@ def test_enemy_car_display_width_never_dips_as_it_gets_closer():
             if prev_w is not None:
                 assert w >= prev_w - 1e-6, (key, tz, w, prev_w)
             prev_w = w
+    pygame.quit()
+
+
+# -- Roadside palm trees (2026-09-05) ----------------------------------------
+
+_DECOR_BASELINE_COUNT = 149
+_DECOR_BASELINE_FIRST_3 = [(30.0, 1.0, 1.0), (72.0, -1.0, 1.32), (114.0, 1.0, 1.24)]
+_DECOR_BASELINE_LAST_3 = [(6162.0, 1.0, 1.32), (6204.0, -1.0, 1.24), (6246.0, 1.0, 1.16)]
+
+
+@pytest.mark.skipif(not PALM_SPRITE_ASSETS_PRESENT, reason="palm sprite PNGs not present")
+def test_all_six_palm_sprites_are_rgba_with_real_transparency():
+    g = _make_game()
+    sprites = g._palm_sprites
+    assert set(sprites.keys()) == set(game.PALM_SPRITE_KEYS)
+    for key, surf in sprites.items():
+        assert surf.get_bitsize() == 32 and surf.get_flags() & pygame.SRCALPHA
+        alpha = pygame.surfarray.pixels_alpha(surf)
+        assert alpha.min() == 0, f"{key}: no fully-transparent pixels"
+        assert alpha.max() == 255, f"{key}: no fully-opaque pixels"
+    pygame.quit()
+
+
+@pytest.mark.skipif(not PALM_SPRITE_ASSETS_PRESENT, reason="palm sprite PNGs not present")
+def test_palm_sprites_share_a_common_root_anchor():
+    g = _make_game()
+    sizes = {surf.get_size() for surf in g._palm_sprites.values()}
+    assert sizes == {game.PALM_SPRITE_CANVAS_SIZE}  # one shared canvas, per the spec
+
+    bottom_rows = {}
+    for key, surf in g._palm_sprites.items():
+        alpha = pygame.surfarray.pixels_alpha(surf)
+        opaque_rows = [y for y in range(surf.get_height()) if (alpha[:, y] > 0).any()]
+        assert opaque_rows, f"{key}: sprite is fully transparent"
+        bottom_rows[key] = opaque_rows[-1]
+    # All 6 trees' actual root row must land within a couple px of each
+    # other despite very different heights/shapes -- that's what "根元
+    #中央を共通の接地アンカーとする" means in practice.
+    assert max(bottom_rows.values()) - min(bottom_rows.values()) <= 3
+    pygame.quit()
+
+
+@pytest.mark.skipif(not PALM_SPRITE_ASSETS_PRESENT, reason="palm sprite PNGs not present")
+def test_no_residual_cyan_pixels_in_palm_sprites():
+    # Regression check for the chroma-key removal itself: no opaque pixel
+    # in any of the 6 shipped PNGs may still look like the source sheet's
+    # cyan background (green or blue channel clearly exceeding red) --
+    # an earlier build attempt left visible cyan speckle along
+    # anti-aliased edges and inside palm_windblown's separated fronds.
+    g = _make_game()
+    for key, surf in g._palm_sprites.items():
+        alpha = pygame.surfarray.pixels_alpha(surf)
+        rgb = pygame.surfarray.pixels3d(surf)
+        mask = alpha > 0
+        r = rgb[..., 0][mask].astype(int)
+        gch = rgb[..., 1][mask].astype(int)
+        b = rgb[..., 2][mask].astype(int)
+        residual = ((gch > r + 10) | (b > r + 10)).sum()
+        assert residual == 0, f"{key}: {residual} residual cyan-tinted opaque px"
+    pygame.quit()
+
+
+def test_palm_placement_is_reproducible_with_the_same_seed():
+    g1 = _make_game()
+    g2 = _make_game()
+    assert g1.palms == g2.palms
+    assert len(g1.palms) > 0
+
+
+def test_palm_rng_is_independent_of_lane_and_enemy_sprite_rngs():
+    # Draining random.Random(42) (the lane rng) or
+    # random.Random(ENEMY_SPRITE_RNG_SEED) right after _build_palms would
+    # consume from those streams if _build_palms shared them -- prove the
+    # actual palm placement matches only a fresh, independent
+    # random.Random(PALM_RNG_SEED) replaying the exact same algorithm,
+    # not either of the other two.
+    g = _make_game()
+
+    rng = random.Random(game.PALM_RNG_SEED)
+    idx = game.PALM_PLACEMENT_START_INDEX
+    side = rng.choice((-1.0, 1.0))
+    streak = 0
+    max_idx = min(game.PALM_PLACEMENT_END_INDEX, len(g.segments) - 1)
+    expected = []
+    while True:
+        idx += rng.randint(game.PALM_SPACING_MIN_SEGMENTS, game.PALM_SPACING_MAX_SEGMENTS)
+        if idx > max_idx:
+            break
+        if streak >= game.PALM_SAME_SIDE_MAX_STREAK or rng.random() < 0.5:
+            side = -side
+            streak = 1
+        else:
+            streak += 1
+        if rng.random() < game.PALM_PAIR_PROBABILITY:
+            sprite_id = "palm_pair"
+        else:
+            sprite_id = rng.choice(game.PALM_NON_PAIR_KEYS)
+        expected.append((idx * game.SEGMENT_LENGTH, side, sprite_id))
+    assert g.palms == expected
+    pygame.quit()
+
+
+def test_palms_do_not_change_existing_decor_traffic_or_course_structure():
+    g = _make_game()
+    assert len(g.decor) == _DECOR_BASELINE_COUNT
+    assert g.decor[:3] == _DECOR_BASELINE_FIRST_3
+    assert g.decor[-3:] == _DECOR_BASELINE_LAST_3
+    traffic_actual = [(round(c.z, 4), round(c.x, 6), round(c.speed, 4)) for c in g.traffic]
+    assert traffic_actual == _TRAFFIC_LAYOUT_BEFORE_SPRITES
+    assert [c.sprite_id for c in g.traffic] == [
+        "compact_hatchback", "boxy_sedan", "panel_van", "compact_hatchback", "muscle_car",
+        "sports_coupe", "panel_van", "boxy_sedan", "boxy_sedan", "pickup_truck", "sports_coupe",
+        "compact_hatchback", "sports_coupe", "sports_coupe", "pickup_truck", "boxy_sedan",
+        "panel_van", "sports_coupe", "pickup_truck", "panel_van", "muscle_car", "pickup_truck",
+    ]
+    assert len(g.segments) == 2100
+    assert game.track_length(g.segments) == 6300.0
+    pygame.quit()
+
+
+def test_no_two_palms_share_the_same_world_z():
+    # "palm_pairは画像自体が2本組なので、さらに同じ位置へ別の木を重ねないでください"
+    # -- one placement decision per position, by construction; this
+    # locks that in as a regression check.
+    g = _make_game()
+    world_zs = [wz for wz, _side, _sprite_id in g.palms]
+    assert len(world_zs) == len(set(world_zs))
+    pygame.quit()
+
+
+def test_palm_side_ratio_and_same_side_streak_cap():
+    g = _make_game()
+    sides = [side for _wz, side, _sprite_id in g.palms]
+    left = sides.count(-1.0)
+    right = sides.count(1.0)
+    assert left + right == len(sides)
+    # "おおむね50:50" -- not exact, but neither side should dominate.
+    assert 0.35 <= left / len(sides) <= 0.65
+
+    streak = 1
+    for prev, cur in zip(sides, sides[1:]):
+        streak = streak + 1 if cur == prev else 1
+        assert streak <= game.PALM_SAME_SIDE_MAX_STREAK
+    pygame.quit()
+
+
+def test_palm_pair_frequency_is_within_the_requested_range():
+    g = _make_game()
+    pair_count = sum(1 for _wz, _side, sprite_id in g.palms if sprite_id == "palm_pair")
+    ratio = pair_count / len(g.palms)
+    # Requested 10-15%; a generous band since this is one specific,
+    # seeded sample, not the true long-run probability.
+    assert 0.03 <= ratio <= 0.30
+
+
+def test_palm_count_is_in_the_expected_ballpark():
+    g = _make_game()
+    assert 20 <= len(g.palms) <= 40  # "約25〜35個程度" target, generous margin
+
+
+def test_no_palms_before_segment_60():
+    g = _make_game()
+    min_world_z = min(wz for wz, _side, _sprite_id in g.palms)
+    assert min_world_z >= game.PALM_PLACEMENT_START_INDEX * game.SEGMENT_LENGTH
+
+
+@pytest.mark.skipif(not PALM_SPRITE_ASSETS_PRESENT, reason="palm sprite PNGs not present")
+def test_palm_target_height_grows_monotonically_as_it_approaches():
+    # Formula-level monotonicity (independent of _sprite_visible's
+    # separate "did it scroll off the bottom of the screen" cutoff,
+    # which is expected and shared by every roadside object/traffic car
+    # in this engine -- see docs/PHASE2_RACE_LOG.md for that finding).
+    g = _make_game()
+    palm_z, side, sprite_id = g.palms[0]
+    opaque_h = g._palm_sprite_opaque_heights[sprite_id]
+    ref_h = g._palm_reference_opaque_height
+    cam_x = g._road_center_x()
+    width, height = g.renderer.left_surface.get_size()
+    seg = g._segment_at(palm_z)
+    world_x = seg.world_x + side * game.PALM_ROAD_SIDE_OFFSET
+    world_y = game.elevation_at(g.segments, palm_z)
+
+    tz_values = sorted({round(3.0 + i * 0.5, 1) for i in range(400)}, reverse=True)
+    prev_h = None
+    for tz in tz_values:
+        g.player.z = palm_z - tz
+        _, _, sw, actual_tz = game.project(
+            world_x, world_y, palm_z, cam_x, g.cam_elevation, g.player.z, width, height
+        )
+        distance_scale = max(0.3, sw / (game.ROAD_WIDTH * 6))
+        target_h = game.PALM_BASE_HEIGHT_PX * distance_scale * (opaque_h / ref_h)
+        if prev_h is not None:
+            assert target_h >= prev_h - 1e-6, (tz, target_h, prev_h)
+        prev_h = target_h
+    pygame.quit()
+
+
+@pytest.mark.skipif(not PALM_SPRITE_ASSETS_PRESENT, reason="palm sprite PNGs not present")
+def test_palm_max_height_is_a_viewport_fraction_not_a_hardcoded_px_value():
+    g = _make_game()
+    _, viewport_h = g.renderer.left_surface.get_size()
+    assert g._palm_max_height_px == pytest.approx(viewport_h * game.PALM_MAX_HEIGHT_VIEWPORT_FRAC)
+    pygame.quit()
+
+
+@pytest.mark.skipif(not PALM_SPRITE_ASSETS_PRESENT, reason="palm sprite PNGs not present")
+def test_palm_is_culled_promptly_once_past_the_max_size_margin(monkeypatch):
+    # Rather than relying on real placement/distance geometry (which, at
+    # this project's current tuning, keeps palms from ever actually
+    # reaching the cull threshold before scrolling off-screen -- see
+    # docs/PHASE2_RACE_LOG.md), directly force a tiny
+    # PALM_MAX_HEIGHT_VIEWPORT_FRAC and PALM_BASE_HEIGHT_PX ratio so the
+    # natural size clearly exceeds PALM_NEAR_CULL_MARGIN, and confirm the
+    # palm is skipped (not drawn frozen at the cap).
+    g = _make_game()
+    palm_z, side, sprite_id = g.palms[0]
+    monkeypatch.setattr(game, "PALM_BASE_HEIGHT_PX", 5000.0)  # force a huge natural size
+    g.player.z = palm_z - 10.0  # well within DRAW_DISTANCE and on-screen
+    g._draw()
+    assert g._palm_debug_visible == []
+    pygame.quit()
+
+
+@pytest.mark.skipif(not PALM_SPRITE_ASSETS_PRESENT, reason="palm sprite PNGs not present")
+def test_palm_scaling_uses_nearest_neighbor_not_smoothscale(monkeypatch):
+    calls = {"smoothscale": 0, "scale": 0}
+    real_scale = pygame.transform.scale
+
+    def counting_scale(surf, size):
+        calls["scale"] += 1
+        return real_scale(surf, size)
+
+    def failing_smoothscale(surf, size):
+        calls["smoothscale"] += 1
+        raise AssertionError("pygame.transform.smoothscale must not be used for palm sprites")
+
+    monkeypatch.setattr(pygame.transform, "scale", counting_scale)
+    monkeypatch.setattr(pygame.transform, "smoothscale", failing_smoothscale)
+
+    g = _make_game()
+    palm_z, _side, _sprite_id = g.palms[0]
+    g.player.z = palm_z - 10.0
+    g._draw()
+    assert calls["scale"] > 0
+    assert calls["smoothscale"] == 0
+    pygame.quit()
+
+
+@pytest.mark.skipif(not PALM_SPRITE_ASSETS_PRESENT, reason="palm sprite PNGs not present")
+def test_palm_scaled_sprite_cache_is_shared_across_both_eyes_and_bounded(monkeypatch):
+    calls = {"scale": 0}
+    real_scale = pygame.transform.scale
+
+    def counting_scale(surf, size):
+        calls["scale"] += 1
+        return real_scale(surf, size)
+
+    monkeypatch.setattr(pygame.transform, "scale", counting_scale)
+
+    g = _make_game()
+    g.traffic = []  # isolate palm caching from the enemy-car sprite's own
+    # (intentionally uncached, per-frame) pygame.transform.scale() call --
+    # otherwise a traffic car that happens to be in view at this z would
+    # add an unrelated scale() call on every _draw(), making this look
+    # like a palm cache miss.
+    palm_z, _side, _sprite_id = g.palms[0]
+    g.player.z = palm_z - 10.0
+    g._draw()  # draws both eyes
+    calls_after_one_draw = calls["scale"]
+    assert calls_after_one_draw >= 1  # at least this one palm was scaled once
+    g._draw()  # same distance again -- should hit the cache, not rescale
+    assert calls["scale"] == calls_after_one_draw
+
+    # Cache bound: force many distinct quantized sizes and confirm the
+    # dict never exceeds PALM_CACHE_MAX_ENTRIES.
+    sprite_id = "palm_straight"
+    for h in range(1, game.PALM_CACHE_MAX_ENTRIES * 3):
+        g._get_cached_palm_sprite(sprite_id, float(h))
+    assert len(g._palm_scaled_cache) <= game.PALM_CACHE_MAX_ENTRIES
+    pygame.quit()
+
+
+@pytest.mark.skipif(not PALM_SPRITE_ASSETS_PRESENT, reason="palm sprite PNGs not present")
+def test_palm_root_follows_road_elevation_on_a_hill():
+    g = _make_game()
+    # Relocate the first palm onto the hill's rising section so its root
+    # must track a non-zero elevation.
+    hill_z = (HILL_START + 60) * SEGMENT_LENGTH
+    world_y = elevation_at(g.segments, hill_z)
+    assert world_y > 1.0  # sanity: actually partway up the hill
+    g.palms[0] = (hill_z, g.palms[0][1], g.palms[0][2])
+    g._roadside_draw_order = sorted(
+        [("tree", wz, side, scale) for wz, side, scale in g.decor]
+        + [("palm", wz, side, sprite_id) for wz, side, sprite_id in g.palms],
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    g.player.z = hill_z - 20.0
+    g.cam_elevation = elevation_at(g.segments, g.player.z)
+    g._draw_road()
+    cam_x = g._road_center_x()
+    seg = g._segment_at(hill_z)
+    world_x = seg.world_x + g.palms[0][1] * game.PALM_ROAD_SIDE_OFFSET
+    width, height = g.renderer.left_surface.get_size()
+    _, sy_on_hill, _, _ = game.project(
+        world_x, world_y, hill_z, cam_x, g.cam_elevation, g.player.z, width, height
+    )
+    _, sy_flat, _, _ = game.project(
+        world_x, 0.0, hill_z, cam_x, g.cam_elevation, g.player.z, width, height
+    )
+    assert sy_on_hill != pytest.approx(sy_flat)  # elevation actually changes the projected root row
+    g._draw()  # must not crash on the hill
+    pygame.quit()
+
+
+def test_palm_hidden_behind_hill_crest_until_crested():
+    # Same regression as test_object_behind_hill_crest_is_hidden_until_crested,
+    # but exercised through the real _draw_palm/_palm_debug_visible path
+    # (both reuse _sprite_visible unchanged -- no separate occlusion logic).
+    # Unlike that reference test (which calls _sprite_visible directly),
+    # _draw_palm also culls anything the camera has already passed -- so
+    # the "visible again" checkpoint must stay *before* far_idx, not past
+    # it, or the assertion would be exercising that unrelated cull instead
+    # of hill occlusion.
+    g = _make_game()
+    far_idx = HILL_START + 130  # inside the fall section, just past the crest
+    far_z = far_idx * SEGMENT_LENGTH
+    sprite_id = g.palms[0][2] if g.palms else "palm_straight"
+
+    def visible_for(player_idx: int) -> bool:
+        g.player.z = player_idx * SEGMENT_LENGTH
+        g.cam_elevation = elevation_at(g.segments, g.player.z)
+        g._draw_road()
+        g._palm_debug_visible = []
+        g._draw_palm(far_z, 1.0, sprite_id)
+        return len(g._palm_debug_visible) > 0
+
+    assert visible_for(HILL_START + 40) is False    # partway up the near slope: hidden
+    assert visible_for(HILL_START + 100) is True    # past the crest, still ahead: visible again
+    pygame.quit()
+
+
+def test_missing_palm_sprite_files_falls_back_to_the_placeholder_tree(monkeypatch, tmp_path):
+    monkeypatch.setattr(game, "PALM_ASSETS_DIR", tmp_path)  # empty dir, no PNGs there
+    g = _make_game()
+    assert g._palm_sprites == {}
+    palm_z, side, sprite_id = g.palms[0] if g.palms else (300.0, 1.0, "palm_straight")
+    g.player.z = palm_z - 10.0
+    g._draw()  # must not crash -- falls back to draw_tree() for every palm
+    pygame.quit()
+
+
+def test_roadside_draw_order_is_sorted_far_to_near_and_covers_every_object():
+    g = _make_game()
+    world_zs = [item[1] for item in g._roadside_draw_order]
+    assert world_zs == sorted(world_zs, reverse=True)
+    assert len(g._roadside_draw_order) == len(g.decor) + len(g.palms)
+    kinds = [item[0] for item in g._roadside_draw_order]
+    assert kinds.count("tree") == len(g.decor)
+    assert kinds.count("palm") == len(g.palms)
+
+
+def test_palms_render_across_the_whole_course_without_crashing():
+    g = _make_game()
+    for idx in range(0, 2100, 60):
+        g.player.z = idx * SEGMENT_LENGTH
+        g.update(1 / 60, _keys(UP=True))
+        g._draw()
     pygame.quit()
 

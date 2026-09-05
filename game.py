@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import math
 import random
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -373,6 +374,130 @@ def _load_enemy_sprites() -> dict[str, pygame.Surface]:
     return sprites
 
 
+# -- Roadside palm trees (2026-09-05) ----------------------------------------
+# 6 red/black pixel-art palms (assets/scenery/palms/) alongside the existing
+# procedural roadside decor (draw_tree()/self.decor, unchanged) -- extracted
+# from a user-supplied sprite sheet by scripts/build_palm_sprites.py, which
+# also derives CANVAS_SIZE/ANCHOR below. Palms reuse the *same* projection,
+# distance culling, and hill-crest occlusion _draw_decor_object already used
+# for the procedural trees (see _draw_palm) -- no separate projection
+# pipeline. Unlike the enemy cars, all 6 share one scale factor at asset-
+# build time (see build_palm_sprites.py's docstring for why that's safe
+# here); what matters at runtime is each sprite's own *measured opaque
+# height* (self._palm_sprite_opaque_heights), never raw canvas height.
+PALM_ASSETS_DIR = Path(__file__).resolve().parent / "assets" / "scenery" / "palms"
+PALM_SPRITE_KEYS = (
+    "palm_straight", "palm_lean_left", "palm_lean_right",
+    "palm_short_wide", "palm_windblown", "palm_pair",
+)
+PALM_NON_PAIR_KEYS = tuple(k for k in PALM_SPRITE_KEYS if k != "palm_pair")
+PALM_SPRITE_CANVAS_SIZE = (109, 162)
+PALM_SPRITE_ANCHOR = (54, 156)  # root (trunk base) center
+
+# How far outside the road edge palms sit -- same formula/offset the
+# existing procedural roadside trees already use (seg.world_x + side *
+# ROAD_WIDTH * 1.4 in _draw_decor_object), reused as-is for consistency
+# rather than inventing a second placement convention.
+PALM_ROAD_SIDE_OFFSET = ROAD_WIDTH * 1.4
+
+# -- Placement (see _build_palms) --------------------------------------------
+# All index values are segment indices (same units as HILL_START/
+# VALLEY_START in road.py), not world_z. Deliberately index 60-1050 (out
+# of 2100 total segments) rather than the whole track, per the "海岸道路
+# らしい区間を中心に、詰め込みすぎない" ask -- the front-to-mid section,
+# stopping well before the valley (VALLEY_START=1710). The first 60
+# segments are left empty on purpose so the start-of-race view/HUD isn't
+# immediately crowded.
+PALM_PLACEMENT_START_INDEX = 60
+PALM_PLACEMENT_END_INDEX = 1050
+PALM_SPACING_MIN_SEGMENTS = 28
+PALM_SPACING_MAX_SEGMENTS = 40
+PALM_SAME_SIDE_MAX_STREAK = 2  # never more than this many placements in a row on one side
+PALM_PAIR_PROBABILITY = 0.125  # midpoint of the requested 10-15%
+
+# Deliberately its own fixed seed, separate from every other rng in this
+# file (_build_traffic's lane rng random.Random(42) and sprite rng
+# random.Random(ENEMY_SPRITE_RNG_SEED)) -- random.Random instances are
+# fully independent objects with no shared global state, so this can
+# never perturb those sequences regardless of call order, but it's still
+# given its own distinct seed for clarity and so re-tuning palm density
+# can't accidentally collide with either existing seed.
+PALM_RNG_SEED = 20260905_02
+
+# -- Sizing (see _draw_palm) --------------------------------------------------
+# "How tall is a *standard* palm (palm_straight) on screen at scale=1.0"
+# (the same `scale = max(0.3, sw / (ROAD_WIDTH * 6))` the procedural
+# roadside trees already compute) -- deliberately independent of
+# PALM_SPRITE_CANVAS_SIZE's arbitrary source-art resolution, tunable on
+# its own. Other palm types come out taller/shorter than this in exact
+# proportion to their own measured opaque height relative to
+# palm_straight's, so palm_short_wide reads shorter and palm_pair's
+# taller of its two crowns reads at roughly the same height as a single
+# standard palm.
+PALM_BASE_HEIGHT_PX = 40
+
+# Safety cap, expressed as a fraction of the *actual* per-eye viewport
+# height (self.renderer.left_surface.get_size()[1] at Game construction
+# time) rather than a fixed px count, per the "固定のマジックナンバーに
+# せず比率として定数化" requirement -- initial value keeps a palm from
+# ever standing taller than 80% of the visible frame.
+PALM_MAX_HEIGHT_VIEWPORT_FRAC = 0.80
+
+# Once a palm's *natural* (unclamped) height would exceed the cap above
+# by more than this fraction, it's culled outright rather than drawn
+# frozen at the capped size -- avoids the "stopped growing" artifact of
+# holding at max size for an extended stretch while still closing in.
+PALM_NEAR_CULL_MARGIN = 1.15
+
+# -- Runtime nearest-neighbor scale cache (see _get_cached_palm_sprite) -----
+# Quantizing the target height to this many px before using it as a cache
+# key means many frames' worth of "roughly the same distance" palms reuse
+# one already-scaled Surface instead of calling pygame.transform.scale
+# again -- the N150-class mini-PC performance ask. PALM_CACHE_MAX_ENTRIES
+# bounds the cache so it can never grow unbounded over a long-running
+# session (oldest entry evicted first, plain LRU).
+PALM_CACHE_SIZE_QUANTUM_PX = 2
+PALM_CACHE_MAX_ENTRIES = 200
+
+
+_palm_sprites_cache: dict = {"loaded": False, "sprites": {}}
+
+
+def _load_palm_sprites() -> dict[str, pygame.Surface]:
+    """Same all-or-nothing cached-load pattern as _load_enemy_sprites()/
+    _load_player_sprites() (see their docstrings)."""
+    if _palm_sprites_cache["loaded"]:
+        return _palm_sprites_cache["sprites"]
+    sprites: dict[str, pygame.Surface] = {}
+    try:
+        for key in PALM_SPRITE_KEYS:
+            path = PALM_ASSETS_DIR / f"{key}.png"
+            surf = pygame.image.load(str(path)).convert_alpha()
+            if surf.get_size() != PALM_SPRITE_CANVAS_SIZE:
+                sprites = {}
+                break
+            sprites[key] = surf
+    except (pygame.error, FileNotFoundError, OSError):
+        sprites = {}
+    _palm_sprites_cache["sprites"] = sprites
+    _palm_sprites_cache["loaded"] = True
+    return sprites
+
+
+def _opaque_bbox_height(surf: pygame.Surface) -> int:
+    """The tree's own visible pixel height within its canvas (as opposed
+    to the canvas's full height, which includes transparent margin) --
+    what PALM_BASE_HEIGHT_PX's relative sizing and the near-cull check
+    are both defined in terms of. Mirrors _opaque_sprite_width's
+    reasoning for the enemy car sprites."""
+    alpha = pygame.surfarray.pixels_alpha(surf)
+    mask = alpha > 0
+    if not mask.any():
+        return surf.get_height()
+    ys = np.where(mask.any(axis=0))[0]
+    return int(ys.max() - ys.min() + 1)
+
+
 # -- Road elevation (hills) -------------------------------------------------
 # Vertical companion to CAMERA_HEIGHT/project() below: each segment now
 # additionally carries an elevation (world_y, see road.py), and every
@@ -555,6 +680,47 @@ class Game:
         self._enemy_reference_opaque_width_px = self._enemy_sprite_opaque_widths.get(
             "boxy_sedan", ENEMY_REFERENCE_OPAQUE_WIDTH_PX
         )
+
+        self.palms = self._build_palms()
+        self._palm_sprites = _load_palm_sprites()
+        self._palm_sprite_opaque_heights = {
+            key: _opaque_bbox_height(surf) for key, surf in self._palm_sprites.items()
+        }
+        self._palm_reference_opaque_height = self._palm_sprite_opaque_heights.get("palm_straight")
+        # PALM_MAX_HEIGHT_VIEWPORT_FRAC resolved to an actual px value once,
+        # against this Game's real per-eye viewport -- never a hardcoded
+        # px constant (see PALM_MAX_HEIGHT_VIEWPORT_FRAC's own comment).
+        _, viewport_h = self.renderer.left_surface.get_size()
+        self._palm_max_height_px = PALM_MAX_HEIGHT_VIEWPORT_FRAC * viewport_h
+        # sprite_id+quantized-height -> already-nearest-neighbor-scaled
+        # Surface, shared by both eyes and every palm of that type/size
+        # this frame or a later one -- see _get_cached_palm_sprite.
+        # OrderedDict so the LRU eviction in PALM_CACHE_MAX_ENTRIES is a
+        # cheap popitem(last=False).
+        self._palm_scaled_cache: OrderedDict[tuple[str, int], tuple[pygame.Surface, float]] = (
+            OrderedDict()
+        )
+        # This frame's actually-drawn (not culled/off-screen/hill-hidden)
+        # palms, as (sprite_id, distance_ahead, side, anchor_screen_pos) --
+        # reset and repopulated every _draw() call, read by
+        # _draw_debug_overlay().
+        self._palm_debug_visible: list[tuple[str, float, float, tuple[float, float]]] = []
+
+        # Combines self.decor (procedural trees, untouched) and self.palms
+        # into one list, sorted once by world_z descending (farthest
+        # first) so _draw() can paint every roadside object -- old trees
+        # and new palms alike -- in a single far-to-near pass, the
+        # painter's-algorithm order needed for near objects to correctly
+        # hide far ones. self.decor/self.palms themselves keep their own
+        # original (unsorted-by-distance) order and content, unaffected --
+        # this is a separate derived view, not a replacement.
+        self._roadside_draw_order: list[tuple[str, float, float, object]] = sorted(
+            [("tree", wz, side, scale) for wz, side, scale in self.decor]
+            + [("palm", wz, side, sprite_id) for wz, side, sprite_id in self.palms],
+            key=lambda item: item[1],
+            reverse=True,
+        )
+
         self._road_base_idx = 0
         self._road_clip_before_n: list[float] = []  # crest occlusion, see _draw_road
 
@@ -607,6 +773,43 @@ class Game:
             side = 1.0 if (i // 14) % 2 == 0 else -1.0
             decor.append((i * SEGMENT_LENGTH, side, 1.0 + (i % 5) * 0.08))
         return decor
+
+    def _build_palms(self) -> list[tuple[float, float, str]]:
+        """(world_z, side, sprite_id) for roadside palm trees --
+        PALM_PLACEMENT_START_INDEX..PALM_PLACEMENT_END_INDEX, spaced
+        PALM_SPACING_MIN_SEGMENTS..PALM_SPACING_MAX_SEGMENTS segments
+        apart, side/type chosen by a dedicated random.Random(
+        PALM_RNG_SEED) that never touches any other rng in this file
+        (see PALM_RNG_SEED's own comment) -- existing traffic/course
+        generation is unaffected regardless of when this runs relative
+        to them. One entry per position (palm_pair's sprite already
+        depicts two trunks, so there's never a second, separately-placed
+        tree at the same spot to double up with)."""
+        rng = random.Random(PALM_RNG_SEED)
+        palms: list[tuple[float, float, str]] = []
+        idx = PALM_PLACEMENT_START_INDEX
+        side = rng.choice((-1.0, 1.0))
+        streak = 0
+        max_idx = min(PALM_PLACEMENT_END_INDEX, len(self.segments) - 1)
+        while True:
+            idx += rng.randint(PALM_SPACING_MIN_SEGMENTS, PALM_SPACING_MAX_SEGMENTS)
+            if idx > max_idx:
+                break
+            # Force a flip once the run hits the cap; otherwise flip with
+            # even odds -- keeps the left/right split close to 50:50
+            # while capping any one side's run length, and avoids a
+            # perfectly rigid left-right-left-right alternation too.
+            if streak >= PALM_SAME_SIDE_MAX_STREAK or rng.random() < 0.5:
+                side = -side
+                streak = 1
+            else:
+                streak += 1
+            if rng.random() < PALM_PAIR_PROBABILITY:
+                sprite_id = "palm_pair"
+            else:
+                sprite_id = rng.choice(PALM_NON_PAIR_KEYS)
+            palms.append((idx * SEGMENT_LENGTH, side, sprite_id))
+        return palms
 
     # -- main loop ------------------------------------------------------
     def run(self, test_frames: int | None = None) -> str:
@@ -913,8 +1116,12 @@ class Game:
         renderer.begin_frame(BLACK)
         self._draw_background()
         self._draw_road()
-        for wz, side, scale in self.decor:
-            self._draw_decor_object(wz, side, scale)
+        self._palm_debug_visible = []
+        for kind, wz, side, extra in self._roadside_draw_order:
+            if kind == "tree":
+                self._draw_decor_object(wz, side, extra)
+            else:
+                self._draw_palm(wz, side, extra)
         for car in self.traffic:
             self._draw_traffic_car(car)
         renderer.draw_world(PLAYER_CAR_DEPTH, self._draw_player_car)
@@ -1078,6 +1285,87 @@ class Game:
 
         self.renderer.draw_world(tz, draw)
 
+    def _get_cached_palm_sprite(self, sprite_id: str, target_h_px: float) -> tuple[pygame.Surface, float]:
+        """Returns (scaled_surface, actual_scale_applied) for `sprite_id`
+        at (quantized) `target_h_px` tall, computing and caching a fresh
+        pygame.transform.scale() only on a cache miss. `actual_scale_applied`
+        reflects the quantized size actually produced, not the raw
+        `target_h_px` requested -- callers must use it (not their own
+        pre-quantization scale) for anchor placement, or the drawn
+        sprite's root would drift a fraction of a px from where the math
+        says it should be."""
+        sprite = self._palm_sprites[sprite_id]
+        native_w, native_h = sprite.get_size()
+        q = PALM_CACHE_SIZE_QUANTUM_PX
+        quantized_h = max(q, round(target_h_px / q) * q)
+        key = (sprite_id, quantized_h)
+        cached = self._palm_scaled_cache.get(key)
+        if cached is not None:
+            self._palm_scaled_cache.move_to_end(key)
+            return cached
+        actual_scale = quantized_h / native_h
+        quantized_w = max(1, round(native_w * actual_scale))
+        # pygame.transform.scale (not smoothscale) -- nearest-neighbor
+        # sampling, no interpolation/antialiasing, matching the source
+        # pixel art.
+        scaled = pygame.transform.scale(sprite, (quantized_w, quantized_h))
+        result = (scaled, actual_scale)
+        self._palm_scaled_cache[key] = result
+        if len(self._palm_scaled_cache) > PALM_CACHE_MAX_ENTRIES:
+            self._palm_scaled_cache.popitem(last=False)  # evict oldest (LRU)
+        return result
+
+    def _draw_palm(self, world_z: float, side: float, sprite_id: str) -> None:
+        """Same projection/culling/hill-occlusion structure as
+        _draw_decor_object (world_z ahead of the camera, offset outside
+        the road edge by the same PALM_ROAD_SIDE_OFFSET convention) --
+        only the final draw call differs (a cached, nearest-neighbor-
+        scaled sprite instead of draw_tree()'s procedural lines)."""
+        seg = self._segment_at(world_z)
+        cam_x = self._road_center_x()
+        cam_y = self.cam_elevation
+        cam_z = self.player.z
+        width, height = self.renderer.left_surface.get_size()
+        world_x = seg.world_x + side * PALM_ROAD_SIDE_OFFSET
+        world_y = elevation_at(self.segments, world_z)
+        sx, sy, sw, tz = project(world_x, world_y, world_z, cam_x, cam_y, cam_z, width, height)
+        if tz > SEGMENT_LENGTH * (DRAW_DISTANCE + 1) or world_z < cam_z:
+            return
+        if not self._sprite_visible(world_z, sy):
+            return
+
+        sprite = self._palm_sprites.get(sprite_id)
+        opaque_h = self._palm_sprite_opaque_heights.get(sprite_id)
+        reference_h = self._palm_reference_opaque_height
+        if sprite is None or not opaque_h or not reference_h:
+            # Missing/broken palm assets -- fall back to the same
+            # procedural placeholder the existing roadside trees use,
+            # rather than drawing nothing or crashing.
+            def draw_fallback(surf: pygame.Surface, ox: float) -> None:
+                draw_tree(surf, sx + ox, sy, max(0.3, sw / (ROAD_WIDTH * 6)), TREE_COLOR)
+
+            self.renderer.draw_world(tz, draw_fallback)
+            return
+
+        distance_scale = max(0.3, sw / (ROAD_WIDTH * 6))  # same formula _draw_decor_object uses
+        height_ratio = opaque_h / reference_h  # this palm's own height relative to palm_straight
+        target_h_px = PALM_BASE_HEIGHT_PX * distance_scale * height_ratio
+        if target_h_px > self._palm_max_height_px * PALM_NEAR_CULL_MARGIN:
+            return  # too close -- cull promptly rather than freeze at the capped size
+        target_h_px = min(target_h_px, self._palm_max_height_px)
+
+        scaled_sprite, sprite_scale = self._get_cached_palm_sprite(sprite_id, target_h_px)
+        anchor_x, anchor_y = PALM_SPRITE_ANCHOR
+        dest_x = sx - anchor_x * sprite_scale
+        dest_y = sy - anchor_y * sprite_scale
+
+        self._palm_debug_visible.append((sprite_id, world_z - self.player.z, side, (sx, sy)))
+
+        def draw(surf: pygame.Surface, ox: float) -> None:
+            surf.blit(scaled_sprite, (dest_x + ox, dest_y))
+
+        self.renderer.draw_world(tz, draw)
+
     def _draw_traffic_car(self, car: TrafficCar) -> None:
         # Interpolated like the camera reference (world_x_at) since a
         # traffic car's z keeps advancing frame to frame, unlike static
@@ -1194,6 +1482,23 @@ class Game:
         self.screen.blit(surf1, surf1.get_rect(center=(cx, cy - 10)))
         self.screen.blit(surf2, surf2.get_rect(center=(cx, cy + 14)))
 
+    def _palm_debug_line(self) -> str:
+        """"表示中のヤシの木の本数、sprite_id、Z距離、左右どちら側か、
+        根元アンカー位置" -- count of everything _draw_palm actually drew
+        this frame (not culled/off-screen/hill-hidden), plus the nearest
+        one's own detail as a representative sample (all of them won't
+        fit on one debug line)."""
+        visible = self._palm_debug_visible
+        if not visible:
+            return "palms: 0 visible"
+        nearest = min(visible, key=lambda p: p[1])
+        sprite_id, distance, side, (anchor_x, anchor_y) = nearest
+        side_label = "right" if side > 0 else "left"
+        return (
+            f"palms: {len(visible)} visible  nearest={sprite_id} z={distance:6.1f}"
+            f" side={side_label}  anchor=({anchor_x:.0f},{anchor_y:.0f})"
+        )
+
     def _draw_debug_overlay(self) -> None:
         renderer, cfg = self.renderer, self.cfg
         max_in, max_out = renderer.max_disparity_range()
@@ -1212,6 +1517,7 @@ class Game:
             f"player sprite: steer={self.player_visual_steer:+.2f}"
             f" -> {PLAYER_SPRITE_KEYS[self._player_sprite_index]}"
             f"  (assets {'loaded' if self._player_sprites else 'MISSING, using placeholder rect'})",
+            self._palm_debug_line(),
         ]
         # Only shown when something's actually wrong -- see sfx.py's
         # unavailable_reason: exactly the "is it a trigger bug or a

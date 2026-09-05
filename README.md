@@ -996,6 +996,52 @@ geometry. Missing/broken PNGs degrade to the original `draw_car()`
 rectangle for every traffic car, same fallback philosophy as everywhere
 else in this project.
 
+### Roadside palm trees (2026-09-05)
+
+Six red/black pixel-art palms (`palm_straight`, `palm_lean_left`,
+`palm_lean_right`, `palm_short_wide`, `palm_windblown`, `palm_pair`,
+`assets/scenery/palms/*.png`) now line the road alongside the existing
+procedural roadside trees, for a coastal-road feel during the long
+straights. Built by `scripts/build_palm_sprites.py` from a user-supplied
+3-col x 2-row sheet (`assets/source/palm_trees_sheet.png`) with a cyan
+chroma-key background -- rather than a plain color-match, the script
+flood-fills from each cell's outer border over cyan-dominant pixels only
+(green/blue high, red low), so a cyan fringe at the edge of a frond is
+removed without eating into the red/dark-red/black tree pixels
+themselves. Each palm is placed on a shared transparent canvas with its
+trunk-base bottom-center at one fixed anchor, same "common ground anchor"
+convention as the player/enemy car sprites.
+
+**Placement** reuses the existing roadside-decor projection
+(`_draw_decor_object`'s formula for how far outside the road edge an
+object sits) but never touches the pre-existing procedural trees' `random`
+sequence or `_build_traffic`'s `random.Random(42)` -- palms get their own
+`random.Random(PALM_RNG_SEED)`, consumed only once, in `_build_palms()`,
+after every other course/traffic RNG draw is done. Placement runs from
+segment 60 to segment 1050, spaced 28-40 segments apart, alternating
+left/right with at most 2 placements in a row on the same side, and a
+12.5% chance of `palm_pair` instead of a single tree at each spot -- fixed
+and reproducible for a given course. Palms carry no collision box and are
+purely decorative.
+
+**Rendering** shares the same distance/scale formula, hill-crest occlusion
+(`_sprite_visible`), and elevation-follow (`elevation_at`) the procedural
+trees and traffic cars already use -- no second projection pipeline. Each
+palm's own measured opaque height (not raw canvas height) sets its
+on-screen size relative to `palm_straight`, so `palm_short_wide` reads
+shorter and `palm_pair` reads about as tall as one standard palm. A
+size safety cap (`PALM_MAX_HEIGHT_VIEWPORT_FRAC`, 80% of the viewport)
+plus a near-cull margin keeps an approaching palm from freezing at a
+maxed-out size for an extended stretch. `pygame.transform.scale()`
+(nearest-neighbor, never `smoothscale()`) does the resizing, and a
+quantized-height LRU cache (`PALM_CACHE_SIZE_QUANTUM_PX`/
+`PALM_CACHE_MAX_ENTRIES`) avoids rescaling every frame for palms that
+are roughly the same distance away, shared across both eyes. Missing/
+broken PNGs fall back to the original procedural `draw_tree()` line-art,
+same fallback philosophy as everywhere else in this project. The `D`
+debug overlay shows a live count/sprite id/side/z line for on-screen
+palms. Details and real-hardware checklist: `docs/PHASE2_RACE_LOG.md`.
+
 ### Road elevation: hills, a crest, and a valley
 
 Added on top of the existing left/right curve system, not a replacement
@@ -1189,6 +1235,15 @@ scripts/build_enemy_sprites.py  background-removal (border flood fill)
                         + slice + shared-canvas compositing for the 6
                         enemy car sprites; rerun after replacing
                         assets/source/enemy_cars_sheet.png
+assets/scenery/palms/     the 6 roadside palm tree sprites (2026-09-05),
+                        built from a user-supplied sheet
+                        (assets/source/palm_trees_sheet.png) by
+                        scripts/build_palm_sprites.py
+scripts/build_palm_sprites.py  cyan chroma-key removal (border flood
+                        fill, cyan-dominant pixels only) + cell slice +
+                        shared-canvas compositing for the 6 palm
+                        sprites; rerun after replacing
+                        assets/source/palm_trees_sheet.png
 docs/                     working log + NEXT_STEPS.md handoff (Japanese)
 ```
 
